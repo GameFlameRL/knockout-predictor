@@ -9,7 +9,6 @@ const SCRIPT_URL =
 const MATCHES_URL = `https://opensheet.elk.sh/${SHEET_ID}/Matches`;
 const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
-// FORCE correct round order
 const ROUND_ORDER = ["R32", "R16", "Quarter", "Semi", "Final"];
 
 let matches = [];
@@ -30,10 +29,10 @@ loadLeaderboard();
 window.addEventListener("resize", renderBracket);
 
 // ======================================
-// LOADERS
+// LOADERS (with cache-busting)
 // ======================================
 function loadMatches() {
-  fetch(MATCHES_URL)
+  fetch(`${MATCHES_URL}?t=${Date.now()}`)
     .then(r => r.json())
     .then(data => {
       matches = Array.isArray(data) ? data : [];
@@ -45,7 +44,7 @@ function loadMatches() {
 }
 
 function loadLeaderboard() {
-  fetch(LEADERBOARD_URL)
+  fetch(`${LEADERBOARD_URL}?t=${Date.now()}`)
     .then(r => r.json())
     .then(data => renderLeaderboard(Array.isArray(data) ? data : []))
     .catch(err => console.error("Failed to load leaderboard", err));
@@ -65,6 +64,15 @@ function initials(name) {
     .slice(0, 2)
     .map(w => w[0].toUpperCase())
     .join("");
+}
+
+// Convert points to a clean number string
+function cleanPoints(val) {
+  const s = safe(val);
+  if (!s || s.toUpperCase() === "#N/A") return "0";
+  const n = Number(s);
+  if (Number.isFinite(n)) return String(n);
+  return "0";
 }
 
 function sortRounds(foundRounds) {
@@ -236,21 +244,13 @@ function submitPredictions() {
   const rows = [];
 
   matches.forEach(m => {
-    const pick = document.querySelector(
-      `input[name="match_${m.MatchID}"]:checked`
-    );
-    if (pick) {
-      rows.push([new Date().toISOString(), user, m.MatchID, pick.value]);
-    }
+    const pick = document.querySelector(`input[name="match_${m.MatchID}"]:checked`);
+    if (pick) rows.push([new Date().toISOString(), user, m.MatchID, pick.value]);
   });
 
   if (!rows.length) return alert("Pick at least one match.");
 
-  Promise.all(
-    rows.map(r =>
-      fetch(SCRIPT_URL, { method: "POST", body: JSON.stringify(r) })
-    )
-  )
+  Promise.all(rows.map(r => fetch(SCRIPT_URL, { method: "POST", body: JSON.stringify(r) })))
     .then(() => {
       alert("Predictions submitted!");
       loadLeaderboard();
@@ -276,10 +276,13 @@ function renderLeaderboard(data) {
   }
 
   data.forEach(p => {
+    const user = safe(p.Username) || "Unknown";
+    const pts = cleanPoints(p.Points);
+
     ul.innerHTML += `
       <li class="lb-row">
-        <span class="lb-user">${safe(p.Username)}</span>
-        <span class="lb-points">${safe(p.Points)} pts</span>
+        <span class="lb-user">${user}</span>
+        <span class="lb-points">${pts} pts</span>
       </li>
     `;
   });
