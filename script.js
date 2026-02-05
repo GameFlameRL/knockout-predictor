@@ -1,11 +1,22 @@
+// ================================
+// CONFIG – EDIT THESE TWO ONLY
+// ================================
 const SHEET_ID = "1ilDa0ZleooN3OBruvtOqF9Ym1CitowFjaLCk1GiYiNc";
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyDS97V_4V-KeSaGWMtTNlSnJoMAG4cTOh7sSMDf3V7WYfF5qbgf7LxEnVELebDmYXIng/exec"; // from Step 9
+const SCRIPT_URL =
+  "https://script.google.com/macros/s/AKfycbyDS97V_4V-KeSaGWMtTNlSnJoMAG4cTOh7sSMDf3V7WYfF5qbgf7LxEnVELebDmYXIng/exec";
+
+// ================================
+// END CONFIG
+// ================================
 
 const MATCHES_URL = `https://opensheet.elk.sh/${SHEET_ID}/Matches`;
 const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
 let matches = [];
 
+// ================================
+// INITIAL LOAD
+// ================================
 fetch(MATCHES_URL)
   .then(res => res.json())
   .then(data => {
@@ -13,19 +24,28 @@ fetch(MATCHES_URL)
     renderMatches();
   })
   .catch(err => {
-    document.getElementById("matches").innerHTML = "Error loading matches.";
-    console.log(err);
+    console.error("Failed to load Matches", err);
+    document.getElementById("matches").innerHTML =
+      "<p style='opacity:.7'>Failed to load matches.</p>";
   });
 
-function initials(name){
+loadLeaderboard();
+
+// ================================
+// HELPERS
+// ================================
+function initials(name) {
   return (name || "")
     .split(" ")
     .filter(Boolean)
-    .slice(0,2)
+    .slice(0, 2)
     .map(w => w[0].toUpperCase())
     .join("");
 }
 
+// ================================
+// RENDER MATCHES
+// ================================
 function renderMatches() {
   const div = document.getElementById("matches");
   div.innerHTML = "";
@@ -66,32 +86,57 @@ function renderMatches() {
         </div>
 
         <div class="result-note">
-          ${winner ? `✅ Result: <strong>${winner}</strong>` : `Result: not set yet`}
+          ${
+            winner
+              ? `✅ Result: <strong>${winner}</strong>`
+              : `Result: not set yet`
+          }
         </div>
       </div>
     `;
   });
 }
 
+// ================================
+// SUBMIT PREDICTIONS
+// ================================
 function submitPredictions() {
   const user = document.getElementById("username").value.trim();
-  if (!user) return alert("Enter your name first.");
+  if (!user) {
+    alert("Enter your username first.");
+    return;
+  }
 
   const rows = [];
 
   matches.forEach(m => {
-    const pick = document.querySelector(`input[name="match_${m.MatchID}"]:checked`);
-    if (pick) rows.push([new Date().toISOString(), user, m.MatchID, pick.value]);
+    const pick = document.querySelector(
+      `input[name="match_${m.MatchID}"]:checked`
+    );
+    if (pick) {
+      rows.push([
+        new Date().toISOString(),
+        user,
+        m.MatchID,
+        pick.value
+      ]);
+    }
   });
 
-  if (rows.length === 0) return alert("Pick at least 1 match.");
+  if (rows.length === 0) {
+    alert("Pick at least one match.");
+    return;
+  }
 
-  Promise.all(rows.map(r => postRow(r)))
+  Promise.all(rows.map(row => postRow(row)))
     .then(() => {
       alert("Predictions submitted!");
       loadLeaderboard();
     })
-    .catch(() => alert("Submission failed. Check SCRIPT_URL + permissions."));
+    .catch(err => {
+      console.error("Submit failed", err);
+      alert("Submission failed. Check Apps Script permissions.");
+    });
 }
 
 function postRow(row) {
@@ -101,14 +146,32 @@ function postRow(row) {
   });
 }
 
+// ================================
+// LEADERBOARD
+// ================================
 function loadLeaderboard() {
   fetch(LEADERBOARD_URL)
     .then(res => res.json())
     .then(data => {
       const ul = document.getElementById("leaderboard");
       ul.innerHTML = "";
-      data.forEach(p => ul.innerHTML += `<li>${p.Username}: ${p.Points}</li>`);
+
+      if (!data || data.length === 0) {
+        ul.innerHTML =
+          "<li style='opacity:.7'>No entries yet.</li>";
+        return;
+      }
+
+      data.forEach(p => {
+        ul.innerHTML += `
+          <li class="lb-row">
+            <span class="lb-user">${p.Username}</span>
+            <span class="lb-points">${p.Points} pts</span>
+          </li>
+        `;
+      });
+    })
+    .catch(err => {
+      console.error("Failed to load leaderboard", err);
     });
 }
-
-loadLeaderboard();
