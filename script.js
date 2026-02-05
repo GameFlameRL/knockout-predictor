@@ -17,16 +17,57 @@ fetch(MATCHES_URL)
     console.log(err);
   });
 
+function initials(name){
+  return (name || "")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0,2)
+    .map(w => w[0].toUpperCase())
+    .join("");
+}
+
 function renderMatches() {
   const div = document.getElementById("matches");
   div.innerHTML = "";
 
   matches.forEach(m => {
+    const winner = (m.Winner || "").trim();
+
     div.innerHTML += `
-      <div class="match">
-        <strong>Match ${m.MatchID}</strong><br>
-        <label><input type="radio" name="match_${m.MatchID}" value="${m.TeamA}"> ${m.TeamA}</label><br>
-        <label><input type="radio" name="match_${m.MatchID}" value="${m.TeamB}"> ${m.TeamB}</label>
+      <div class="match-card">
+        <div class="match-top">
+          <span>Match ${m.MatchID}</span>
+          <span>${m.Round || ""}</span>
+        </div>
+
+        <div class="fixture">
+          <div class="team">
+            <div class="badge">${initials(m.TeamA)}</div>
+            <div class="team-name">${m.TeamA}</div>
+          </div>
+
+          <div class="vs">VS</div>
+
+          <div class="team">
+            <div class="badge">${initials(m.TeamB)}</div>
+            <div class="team-name">${m.TeamB}</div>
+          </div>
+        </div>
+
+        <div class="pick">
+          <label>
+            <input type="radio" name="match_${m.MatchID}" value="${m.TeamA}">
+            Pick ${m.TeamA}
+          </label>
+          <label>
+            <input type="radio" name="match_${m.MatchID}" value="${m.TeamB}">
+            Pick ${m.TeamB}
+          </label>
+        </div>
+
+        <div class="result-note">
+          ${winner ? `✅ Result: <strong>${winner}</strong>` : `Result: not set yet`}
+        </div>
       </div>
     `;
   });
