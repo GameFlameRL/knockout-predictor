@@ -6,30 +6,42 @@ const SCRIPT_URL =
   "https://script.google.com/macros/s/AKfycbyDS97V_4V-KeSaGWMtTNlSnJoMAG4cTOh7sSMDf3V7WYfF5qbgf7LxEnVELebDmYXIng/exec";
 
 // ================================
-// END CONFIG
-// ================================
-
 const MATCHES_URL = `https://opensheet.elk.sh/${SHEET_ID}/Matches`;
 const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
 let matches = [];
 
+// Preferred round order (customize if you want)
+const ROUND_ORDER = ["R32", "R16", "Quarter", "Semi", "Final"];
+
 // ================================
 // INITIAL LOAD
 // ================================
-fetch(MATCHES_URL)
-  .then(res => res.json())
-  .then(data => {
-    matches = data;
-    renderMatches();
-  })
-  .catch(err => {
-    console.error("Failed to load Matches", err);
-    document.getElementById("matches").innerHTML =
-      "<p style='opacity:.7'>Failed to load matches.</p>";
-  });
-
+loadMatches();
 loadLeaderboard();
+
+// ================================
+// LOADERS
+// ================================
+function loadMatches() {
+  fetch(MATCHES_URL)
+    .then(res => res.json())
+    .then(data => {
+      matches = Array.isArray(data) ? data : [];
+      renderBracket();
+    })
+    .catch(err => {
+      console.error("Failed to load Matches", err);
+      showBracketMessage("Failed to load matches. Check sheet publishing + tab name.");
+    });
+}
+
+function loadLeaderboard() {
+  fetch(LEADERBOARD_URL)
+    .then(res => res.json())
+    .then(data => renderLeaderboard(Array.isArray(data) ? data : []))
+    .catch(err => console.error("Failed to load leaderboard", err));
+}
 
 // ================================
 // HELPERS
@@ -43,21 +55,72 @@ function initials(name) {
     .join("");
 }
 
-// ================================
-// RENDER MATCHES
-// ================================
-function renderMatches() {
-  const div = document.getElementById("matches");
-  div.innerHTML = "";
+function normRound(r) {
+  return (r || "").trim();
+}
 
+function showBracketMessage(msg) {
+  const el = document.getElementById("bracketMsg");
+  if (!el) return;
+  el.style.display = "block";
+  el.innerHTML = msg;
+}
+
+// Sort rounds by preferred order, then anything else after
+function sortRounds(roundNames) {
+  const set = new Set(roundNames);
+  const inOrder = ROUND_ORDER.filter(r => set.has(r));
+  const extras = roundNames.filter(r => !ROUND_ORDER.includes(r)).sort();
+  return [...inOrder, ...extras];
+}
+
+// ================================
+// BRACKET RENDER
+// ================================
+function renderBracket() {
+  const inner = document.getElementById("bracketInner");
+  if (!inner) return;
+
+  inner.innerHTML = "";
+
+  if (!matches.length) {
+    showBracketMessage("No matches found. Check your Matches sheet rows and headers.");
+    return;
+  }
+
+  // Group matches by round
+  const groups = {};
   matches.forEach(m => {
-    const winner = (m.Winner || "").trim();
+    const r = normRound(m.Round) || "Round";
+    if (!groups[r]) groups[r] = [];
+    groups[r].push(m);
+  });
 
-    div.innerHTML += `
-      <div class="match-card">
+  const rounds = sortRounds(Object.keys(groups));
+
+  // Build columns
+  rounds.forEach(roundName => {
+    const col = document.createElement("div");
+    col.className = "round-col";
+
+    const title = document.createElement("div");
+    title.className = "round-title";
+    title.innerHTML = `<span>${roundName}</span><small>${groups[roundName].length} matches</small>`;
+    col.appendChild(title);
+
+    // Sort matches within round by MatchID numeric if possible
+    groups[roundName].sort((a, b) => Number(a.MatchID) - Number(b.MatchID));
+
+    groups[roundName].forEach(m => {
+      const winner = (m.Winner || "").trim();
+
+      const card = document.createElement("div");
+      card.className = "match-card";
+
+      card.innerHTML = `
         <div class="match-top">
           <span>Match ${m.MatchID}</span>
-          <span>${m.Round || ""}</span>
+          <span>${winner ? "✅ played" : "🕒 pending"}</span>
         </div>
 
         <div class="fixture">
@@ -86,15 +149,19 @@ function renderMatches() {
         </div>
 
         <div class="result-note">
-          ${
-            winner
-              ? `✅ Result: <strong>${winner}</strong>`
-              : `Result: not set yet`
-          }
+          ${winner ? `✅ Result: <strong>${winner}</strong>` : `Result: not set yet`}
         </div>
-      </div>
-    `;
+      `;
+
+      col.appendChild(card);
+    });
+
+    inner.appendChild(col);
   });
+
+  // hide any previous message
+  const msg = document.getElementById("bracketMsg");
+  if (msg) msg.style.display = "none";
 }
 
 // ================================
@@ -102,31 +169,16 @@ function renderMatches() {
 // ================================
 function submitPredictions() {
   const user = document.getElementById("username").value.trim();
-  if (!user) {
-    alert("Enter your username first.");
-    return;
-  }
+  if (!user) return alert("Enter your username first.");
 
   const rows = [];
 
   matches.forEach(m => {
-    const pick = document.querySelector(
-      `input[name="match_${m.MatchID}"]:checked`
-    );
-    if (pick) {
-      rows.push([
-        new Date().toISOString(),
-        user,
-        m.MatchID,
-        pick.value
-      ]);
-    }
+    const pick = document.querySelector(`input[name="match_${m.MatchID}"]:checked`);
+    if (pick) rows.push([new Date().toISOString(), user, m.MatchID, pick.value]);
   });
 
-  if (rows.length === 0) {
-    alert("Pick at least one match.");
-    return;
-  }
+  if (rows.length === 0) return alert("Pick at least one match.");
 
   Promise.all(rows.map(row => postRow(row)))
     .then(() => {
@@ -135,7 +187,7 @@ function submitPredictions() {
     })
     .catch(err => {
       console.error("Submit failed", err);
-      alert("Submission failed. Check Apps Script permissions.");
+      alert("Submission failed. Check Apps Script permissions / deployment.");
     });
 }
 
@@ -147,31 +199,25 @@ function postRow(row) {
 }
 
 // ================================
-// LEADERBOARD
+// LEADERBOARD RENDER
 // ================================
-function loadLeaderboard() {
-  fetch(LEADERBOARD_URL)
-    .then(res => res.json())
-    .then(data => {
-      const ul = document.getElementById("leaderboard");
-      ul.innerHTML = "";
+function renderLeaderboard(data) {
+  const ul = document.getElementById("leaderboard");
+  if (!ul) return;
 
-      if (!data || data.length === 0) {
-        ul.innerHTML =
-          "<li style='opacity:.7'>No entries yet.</li>";
-        return;
-      }
+  ul.innerHTML = "";
 
-      data.forEach(p => {
-        ul.innerHTML += `
-          <li class="lb-row">
-            <span class="lb-user">${p.Username}</span>
-            <span class="lb-points">${p.Points} pts</span>
-          </li>
-        `;
-      });
-    })
-    .catch(err => {
-      console.error("Failed to load leaderboard", err);
-    });
+  if (!data.length) {
+    ul.innerHTML = "<li style='opacity:.7'>No entries yet.</li>";
+    return;
+  }
+
+  data.forEach(p => {
+    ul.innerHTML += `
+      <li class="lb-row">
+        <span class="lb-user">${p.Username}</span>
+        <span class="lb-points">${p.Points} pts</span>
+      </li>
+    `;
+  });
 }
