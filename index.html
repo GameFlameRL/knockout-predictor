@@ -1,31 +1,30 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Knockout Predictor</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <h1>🏆 Knockout Tournament Predictor</h1>
 
-  <div class="card">
-    <label>Your name</label>
-    <input id="username" placeholder="e.g. Harry" />
-    <button id="saveBtn">Save Predictions</button>
-    <p class="hint">Predictions are saved in your browser on this device.</p>
-  </div>
+<h1>🏆 Knockout Predictor</h1>
 
-  <div class="card">
-    <h2>Bracket</h2>
-    <div id="bracket"></div>
-  </div>
+<div class="card">
+  <input id="username" placeholder="Your name (exact spelling)" />
+</div>
 
-  <div class="card">
-    <h2>Leaderboard</h2>
-    <ul id="leaderboard"></ul>
-  </div>
+<div class="card">
+  <h2>Matches</h2>
+  <div id="matches"></div>
+  <button onclick="submitPredictions()">Submit Predictions</button>
+</div>
 
-  <script src="script.js"></script>
+<div class="card">
+  <h2>Leaderboard</h2>
+  <ul id="leaderboard"></ul>
+</div>
+
+<script src="script.js"></script>
 </body>
 </html>
