@@ -15,7 +15,7 @@
           <div class="brand-mark">🏆</div>
           <div class="brand-text">
             <div class="brand-title">Knockout Predictor</div>
-            <div class="brand-subtitle">Mysters-style esports UI</div>
+            <div class="brand-subtitle">Bracket layout view</div>
           </div>
         </div>
 
@@ -45,17 +45,21 @@
         </div>
 
         <div class="mini-note">
-          Tip: If you want proper logos later, we can add a “Teams” sheet with logo URLs.
+          Bracket is built from your <strong>Matches</strong> sheet and grouped by <strong>Round</strong>.
         </div>
       </section>
 
       <section class="panel">
         <div class="panel-header">
-          <h2>Matches</h2>
-          <p>Pick winners for each fixture.</p>
+          <h2>Bracket</h2>
+          <p>Each column is a round. Scroll sideways if needed.</p>
         </div>
 
-        <div id="matches" class="matches"></div>
+        <div id="bracket" class="bracket-scroll">
+          <div id="bracketInner" class="bracket"></div>
+        </div>
+
+        <div id="bracketMsg" class="mini-note" style="display:none;"></div>
       </section>
 
       <section class="panel">
@@ -69,9 +73,7 @@
     </main>
 
     <footer class="footer">
-      <span>Made for a shared Google Sheets leaderboard.</span>
-      <span class="sep">•</span>
-      <span>Upgrade path: bracket view, locks, logos, round weighting.</span>
+      <span>Next upgrade: auto-advance winners and draw connecting lines.</span>
     </footer>
   </div>
 
