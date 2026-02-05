@@ -7,74 +7,29 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-
   <div class="app">
-    <header class="topbar">
-      <div class="topbar-inner">
-        <div class="brand">
-          <div class="brand-mark">🏆</div>
-          <div class="brand-text">
-            <div class="brand-title">Knockout Predictor</div>
-            <div class="brand-subtitle">Bracket layout view</div>
-          </div>
-        </div>
+    <div class="topbar">
+      <div class="title">🏆 Knockout Predictor</div>
+      <div class="controls">
+        <input id="username" placeholder="Your name (exact spelling)" autocomplete="off">
+        <button onclick="submitPredictions()">Submit Predictions</button>
+        <button onclick="loadLeaderboard()">Refresh</button>
+      </div>
+    </div>
 
-        <div class="status-pill" id="statusPill">
-          <span class="dot"></span>
-          <span class="status-text">Connected</span>
+    <div class="layout">
+      <div class="stage">
+        <div class="bracket-wrap" id="bracketWrap">
+          <svg id="lines"></svg>
+          <div class="columns" id="columns"></div>
         </div>
       </div>
-      <div class="topbar-glow"></div>
-    </header>
 
-    <main class="grid">
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Your Entry</h2>
-          <p>Use the same spelling each time.</p>
-        </div>
-
-        <div class="input-row">
-          <label for="username">Username</label>
-          <input id="username" placeholder="e.g. Harry" autocomplete="off" />
-        </div>
-
-        <div class="actions">
-          <button class="btn btn-primary" onclick="submitPredictions()">Submit Predictions</button>
-          <button class="btn btn-ghost" onclick="loadLeaderboard()">Refresh Leaderboard</button>
-        </div>
-
-        <div class="mini-note">
-          Bracket is built from your <strong>Matches</strong> sheet and grouped by <strong>Round</strong>.
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Bracket</h2>
-          <p>Each column is a round. Scroll sideways if needed.</p>
-        </div>
-
-        <div id="bracket" class="bracket-scroll">
-          <div id="bracketInner" class="bracket"></div>
-        </div>
-
-        <div id="bracketMsg" class="mini-note" style="display:none;"></div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Leaderboard</h2>
-          <p>Points update when Winners are filled in on the Matches sheet.</p>
-        </div>
-
+      <div class="side">
+        <h2>Leaderboard</h2>
         <ul id="leaderboard" class="leaderboard"></ul>
-      </section>
-    </main>
-
-    <footer class="footer">
-      <span>Next upgrade: auto-advance winners and draw connecting lines.</span>
-    </footer>
+      </div>
+    </div>
   </div>
 
   <script src="script.js"></script>
