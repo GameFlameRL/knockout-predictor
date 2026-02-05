@@ -1,30 +1,80 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Knockout Predictor</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-<h1>🏆 Knockout Predictor</h1>
+  <div class="app">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <div class="brand-mark">🏆</div>
+          <div class="brand-text">
+            <div class="brand-title">Knockout Predictor</div>
+            <div class="brand-subtitle">Mysters-style esports UI</div>
+          </div>
+        </div>
 
-<div class="card">
-  <input id="username" placeholder="Your name (exact spelling)" />
-</div>
+        <div class="status-pill" id="statusPill">
+          <span class="dot"></span>
+          <span class="status-text">Connected</span>
+        </div>
+      </div>
+      <div class="topbar-glow"></div>
+    </header>
 
-<div class="card">
-  <h2>Matches</h2>
-  <div id="matches"></div>
-  <button onclick="submitPredictions()">Submit Predictions</button>
-</div>
+    <main class="grid">
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Your Entry</h2>
+          <p>Use the same spelling each time.</p>
+        </div>
 
-<div class="card">
-  <h2>Leaderboard</h2>
-  <ul id="leaderboard"></ul>
-</div>
+        <div class="input-row">
+          <label for="username">Username</label>
+          <input id="username" placeholder="e.g. Harry" autocomplete="off" />
+        </div>
 
-<script src="script.js"></script>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="submitPredictions()">Submit Predictions</button>
+          <button class="btn btn-ghost" onclick="loadLeaderboard()">Refresh Leaderboard</button>
+        </div>
+
+        <div class="mini-note">
+          Tip: If you want proper logos later, we can add a “Teams” sheet with logo URLs.
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Matches</h2>
+          <p>Pick winners for each fixture.</p>
+        </div>
+
+        <div id="matches" class="matches"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Leaderboard</h2>
+          <p>Points update when Winners are filled in on the Matches sheet.</p>
+        </div>
+
+        <ul id="leaderboard" class="leaderboard"></ul>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Made for a shared Google Sheets leaderboard.</span>
+      <span class="sep">•</span>
+      <span>Upgrade path: bracket view, locks, logos, round weighting.</span>
+    </footer>
+  </div>
+
+  <script src="script.js"></script>
 </body>
 </html>
