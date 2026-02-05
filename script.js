@@ -20,12 +20,28 @@ const COL_WIDTH = 320;
 const CARD_WIDTH = 280;
 const HEADER_H = 54;
 
+// build stamp so you can confirm newest JS is live
+const BUILD_STAMP = new Date().toISOString();
+
 // ======================================
 // INIT
 // ======================================
+debugWrite(`BUILD: ${BUILD_STAMP}\nLoading…`);
 loadAll();
-
 window.addEventListener("resize", renderBracket);
+
+// ======================================
+// DEBUG
+// ======================================
+function debugWrite(msg) {
+  const el = document.getElementById("debug");
+  if (el) el.textContent = msg;
+}
+
+function debugAppend(msg) {
+  const el = document.getElementById("debug");
+  if (el) el.textContent += `\n${msg}`;
+}
 
 // ======================================
 // LOADERS
@@ -33,32 +49,56 @@ window.addEventListener("resize", renderBracket);
 function loadAll() {
   Promise.all([loadMatches(), loadLeaderboard()])
     .then(() => {
-      // optional auto-sync: tries to push winners forward once on load
-      // (safe mode: only writes into blank/TBD next-round slots)
+      // auto-sync once on load (safe overwrite rules apply)
       syncBracketToSheet();
     })
     .catch(() => {});
 }
 
 function loadMatches() {
-  return fetch(`${MATCHES_URL}?t=${Date.now()}`)
-    .then(r => r.json())
+  const url = `${MATCHES_URL}?t=${Date.now()}`;
+
+  debugWrite(
+    `BUILD: ${BUILD_STAMP}\n` +
+    `SHEET_ID: ${SHEET_ID}\n` +
+    `MATCHES_URL: ${url}\n` +
+    `SCRIPT_URL: ${SCRIPT_URL}\n` +
+    `\nFetching matches…`
+  );
+
+  return fetch(url)
+    .then(r => {
+      debugAppend(`Matches fetch HTTP: ${r.status}`);
+      return r.json();
+    })
     .then(data => {
       matches = Array.isArray(data) ? data : [];
+      debugAppend(`Matches loaded: ${matches.length}`);
+
+      if (matches.length) {
+        const first = matches[0];
+        debugAppend(`First match keys: ${Object.keys(first).join(", ")}`);
+        debugAppend(`First match sample: MatchID=${safe(first.MatchID)} Round=${safe(first.Round)} TeamA=${safe(first.TeamA)} TeamB=${safe(first.TeamB)} Winner=${safe(first.Winner)}`);
+      } else {
+        debugAppend(`Matches is empty array. That means opensheet returned [] for your Matches tab.`);
+      }
+
       renderBracket();
     })
     .catch(err => {
-      console.error("Failed to load matches", err);
+      debugAppend(`MATCHES ERROR: ${String(err)}`);
       matches = [];
       renderBracket();
     });
 }
 
 function loadLeaderboard() {
-  return fetch(`${LEADERBOARD_URL}?t=${Date.now()}`)
+  const url = `${LEADERBOARD_URL}?t=${Date.now()}`;
+
+  return fetch(url)
     .then(r => r.json())
     .then(data => renderLeaderboard(Array.isArray(data) ? data : []))
-    .catch(err => console.error("Failed to load leaderboard", err));
+    .catch(err => debugAppend(`LEADERBOARD ERROR: ${String(err)}`));
 }
 
 // ======================================
@@ -112,19 +152,24 @@ function renderBracket() {
   const svg = document.getElementById("lines");
   const wrap = document.getElementById("bracketWrap");
 
-  if (!columnsEl || !svg || !wrap) return;
+  if (!columnsEl || !svg || !wrap) {
+    debugAppend(`DOM ERROR: Missing one of #columns, #lines, #bracketWrap`);
+    return;
+  }
 
   columnsEl.innerHTML = "";
   svg.innerHTML = "";
 
-  if (!matches.length) return;
+  if (!matches.length) {
+    // Keep stage empty but readable
+    return;
+  }
 
   const groups = groupByRound();
   const rounds = sortRounds(Object.keys(groups));
   const roundEls = [];
 
-  // Build columns
-  rounds.forEach((roundName, roundIndex) => {
+  rounds.forEach((roundName) => {
     const roundEl = document.createElement("div");
     roundEl.className = "round";
 
@@ -133,16 +178,15 @@ function renderBracket() {
     header.textContent = roundName;
     roundEl.appendChild(header);
 
-    groups[roundName].forEach((m, i) => {
+    (groups[roundName] || []).forEach((m, i) => {
       const teamA = safe(m.TeamA);
       const teamB = safe(m.TeamB);
       const winner = safe(m.Winner);
 
       const card = document.createElement("div");
       card.className = "match";
-      card.dataset.round = String(roundIndex);
-      card.dataset.index = String(i);
       card.dataset.matchId = safe(m.MatchID);
+      card.dataset.index = String(i);
 
       const aWin = winner && winner === teamA;
       const bWin = winner && winner === teamB;
@@ -153,22 +197,14 @@ function renderBracket() {
           <div class="nameBox">${teamA}</div>
           <div class="scoreBox"></div>
         </div>
-
         <div class="teamrow ${bWin ? "win" : ""}">
           <div class="logoBox">${initials(teamB)}</div>
           <div class="nameBox">${teamB}</div>
           <div class="scoreBox"></div>
         </div>
-
         <div class="picks">
-          <label>
-            <input type="radio" name="match_${safe(m.MatchID)}" value="${teamA}">
-            ${teamA}
-          </label>
-          <label>
-            <input type="radio" name="match_${safe(m.MatchID)}" value="${teamB}">
-            ${teamB}
-          </label>
+          <label><input type="radio" name="match_${safe(m.MatchID)}" value="${teamA}"> ${teamA}</label>
+          <label><input type="radio" name="match_${safe(m.MatchID)}" value="${teamB}"> ${teamB}</label>
         </div>
       `;
 
@@ -197,7 +233,7 @@ function renderBracket() {
   svg.setAttribute("width", rect.width);
   svg.setAttribute("height", rect.height);
 
-  // Draw connectors
+  // Draw connectors between rounds
   for (let r = 0; r < roundEls.length - 1; r++) {
     const leftCards = [...roundEls[r].querySelectorAll(".match")];
     const rightCards = [...roundEls[r + 1].querySelectorAll(".match")];
@@ -243,47 +279,37 @@ function drawConnector(svg, wrap, a, b, to) {
 }
 
 // ======================================
-// AUTO-ADVANCE + WRITE BACK TO SHEET
+// AUTO-ADVANCE + WRITE BACK
 // ======================================
 function syncBracketToSheet() {
-  if (!matches.length) return;
+  if (!matches.length) {
+    debugAppend("SYNC: skipped (no matches loaded)");
+    return;
+  }
 
   const groups = groupByRound();
   const rounds = sortRounds(Object.keys(groups));
-
-  // Walk round -> next round
   const updates = [];
 
   for (let r = 0; r < rounds.length - 1; r++) {
-    const currRoundName = rounds[r];
-    const nextRoundName = rounds[r + 1];
+    const curr = groups[rounds[r]] || [];
+    const next = groups[rounds[r + 1]] || [];
 
-    const curr = groups[currRoundName] || [];
-    const next = groups[nextRoundName] || [];
-
-    // next round should have half as many matches. We map:
-    // curr[0],curr[1] -> next[0]
-    // curr[2],curr[3] -> next[1] ...
     for (let j = 0; j < next.length; j++) {
       const m1 = curr[j * 2];
       const m2 = curr[j * 2 + 1];
       const dest = next[j];
-
       if (!m1 || !m2 || !dest) continue;
 
       const w1 = safe(m1.Winner);
       const w2 = safe(m2.Winner);
-
-      // Only advance when both winners are set
       if (!w1 || !w2) continue;
 
       const destA = safe(dest.TeamA);
       const destB = safe(dest.TeamB);
 
-      // Safe mode: only overwrite if destination slots are blank/TBD
       const canWriteA = isBlankSlot(destA) || destA === w1;
       const canWriteB = isBlankSlot(destB) || destB === w2;
-
       if (!canWriteA || !canWriteB) continue;
 
       updates.push({
@@ -295,9 +321,12 @@ function syncBracketToSheet() {
     }
   }
 
-  if (!updates.length) return;
+  if (!updates.length) {
+    debugAppend("SYNC: nothing to write (no new winners or next slots already filled)");
+    return;
+  }
 
-  // Send updates sequentially (gentler on Apps Script)
+  debugAppend(`SYNC: writing ${updates.length} match updates…`);
   runSequential_(updates);
 }
 
@@ -310,17 +339,18 @@ function runSequential_(updates) {
 
   chain
     .then(() => {
-      // re-pull matches after writing so UI reflects sheet
+      debugAppend("SYNC: done, reloading matches…");
       return loadMatches();
     })
-    .catch(err => console.error("Sync failed", err));
+    .catch(err => debugAppend(`SYNC ERROR: ${String(err)}`));
 }
 
 function postToScript_(payload) {
+  // NOTE: no-cors means we can't read response body; we just fire-and-forget.
   return fetch(SCRIPT_URL, {
     method: "POST",
     body: JSON.stringify(payload),
-    mode: "no-cors" // avoids CORS blocking on GitHub Pages
+    mode: "no-cors"
   });
 }
 
