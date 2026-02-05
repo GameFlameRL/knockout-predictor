@@ -13,7 +13,7 @@ const ROUND_ORDER = ["R32", "R16", "Quarter", "Semi", "Final"];
 
 let matches = [];
 
-// layout tuning (matches your CSS)
+// layout tuning
 const MATCH_HEIGHT = 92;
 const BASE_GAP = 26;
 const COL_WIDTH = 320;
@@ -23,16 +23,25 @@ const HEADER_H = 54;
 // ======================================
 // INIT
 // ======================================
-loadMatches();
-loadLeaderboard();
+loadAll();
 
 window.addEventListener("resize", renderBracket);
 
 // ======================================
-// LOADERS (with cache-busting)
+// LOADERS
 // ======================================
+function loadAll() {
+  Promise.all([loadMatches(), loadLeaderboard()])
+    .then(() => {
+      // optional auto-sync: tries to push winners forward once on load
+      // (safe mode: only writes into blank/TBD next-round slots)
+      syncBracketToSheet();
+    })
+    .catch(() => {});
+}
+
 function loadMatches() {
-  fetch(`${MATCHES_URL}?t=${Date.now()}`)
+  return fetch(`${MATCHES_URL}?t=${Date.now()}`)
     .then(r => r.json())
     .then(data => {
       matches = Array.isArray(data) ? data : [];
@@ -40,11 +49,13 @@ function loadMatches() {
     })
     .catch(err => {
       console.error("Failed to load matches", err);
+      matches = [];
+      renderBracket();
     });
 }
 
 function loadLeaderboard() {
-  fetch(`${LEADERBOARD_URL}?t=${Date.now()}`)
+  return fetch(`${LEADERBOARD_URL}?t=${Date.now()}`)
     .then(r => r.json())
     .then(data => renderLeaderboard(Array.isArray(data) ? data : []))
     .catch(err => console.error("Failed to load leaderboard", err));
@@ -64,15 +75,6 @@ function initials(name) {
     .slice(0, 2)
     .map(w => w[0].toUpperCase())
     .join("");
-}
-
-// Convert points to a clean number string
-function cleanPoints(val) {
-  const s = safe(val);
-  if (!s || s.toUpperCase() === "#N/A") return "0";
-  const n = Number(s);
-  if (Number.isFinite(n)) return String(n);
-  return "0";
 }
 
 function sortRounds(foundRounds) {
@@ -95,6 +97,11 @@ function groupByRound() {
   });
 
   return groups;
+}
+
+function isBlankSlot(team) {
+  const t = safe(team).toLowerCase();
+  return t === "" || t === "tbd" || t === "?" || t === "null" || t === "undefined";
 }
 
 // ======================================
@@ -133,8 +140,9 @@ function renderBracket() {
 
       const card = document.createElement("div");
       card.className = "match";
-      card.dataset.round = roundIndex;
-      card.dataset.index = i;
+      card.dataset.round = String(roundIndex);
+      card.dataset.index = String(i);
+      card.dataset.matchId = safe(m.MatchID);
 
       const aWin = winner && winner === teamA;
       const bWin = winner && winner === teamB;
@@ -154,11 +162,11 @@ function renderBracket() {
 
         <div class="picks">
           <label>
-            <input type="radio" name="match_${m.MatchID}" value="${teamA}">
+            <input type="radio" name="match_${safe(m.MatchID)}" value="${teamA}">
             ${teamA}
           </label>
           <label>
-            <input type="radio" name="match_${m.MatchID}" value="${teamB}">
+            <input type="radio" name="match_${safe(m.MatchID)}" value="${teamB}">
             ${teamB}
           </label>
         </div>
@@ -235,6 +243,88 @@ function drawConnector(svg, wrap, a, b, to) {
 }
 
 // ======================================
+// AUTO-ADVANCE + WRITE BACK TO SHEET
+// ======================================
+function syncBracketToSheet() {
+  if (!matches.length) return;
+
+  const groups = groupByRound();
+  const rounds = sortRounds(Object.keys(groups));
+
+  // Walk round -> next round
+  const updates = [];
+
+  for (let r = 0; r < rounds.length - 1; r++) {
+    const currRoundName = rounds[r];
+    const nextRoundName = rounds[r + 1];
+
+    const curr = groups[currRoundName] || [];
+    const next = groups[nextRoundName] || [];
+
+    // next round should have half as many matches. We map:
+    // curr[0],curr[1] -> next[0]
+    // curr[2],curr[3] -> next[1] ...
+    for (let j = 0; j < next.length; j++) {
+      const m1 = curr[j * 2];
+      const m2 = curr[j * 2 + 1];
+      const dest = next[j];
+
+      if (!m1 || !m2 || !dest) continue;
+
+      const w1 = safe(m1.Winner);
+      const w2 = safe(m2.Winner);
+
+      // Only advance when both winners are set
+      if (!w1 || !w2) continue;
+
+      const destA = safe(dest.TeamA);
+      const destB = safe(dest.TeamB);
+
+      // Safe mode: only overwrite if destination slots are blank/TBD
+      const canWriteA = isBlankSlot(destA) || destA === w1;
+      const canWriteB = isBlankSlot(destB) || destB === w2;
+
+      if (!canWriteA || !canWriteB) continue;
+
+      updates.push({
+        type: "setMatchTeams",
+        matchId: safe(dest.MatchID),
+        teamA: w1,
+        teamB: w2
+      });
+    }
+  }
+
+  if (!updates.length) return;
+
+  // Send updates sequentially (gentler on Apps Script)
+  runSequential_(updates);
+}
+
+function runSequential_(updates) {
+  let chain = Promise.resolve();
+
+  updates.forEach(u => {
+    chain = chain.then(() => postToScript_(u));
+  });
+
+  chain
+    .then(() => {
+      // re-pull matches after writing so UI reflects sheet
+      return loadMatches();
+    })
+    .catch(err => console.error("Sync failed", err));
+}
+
+function postToScript_(payload) {
+  return fetch(SCRIPT_URL, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    mode: "no-cors" // avoids CORS blocking on GitHub Pages
+  });
+}
+
+// ======================================
 // SUBMIT PREDICTIONS
 // ======================================
 function submitPredictions() {
@@ -244,13 +334,16 @@ function submitPredictions() {
   const rows = [];
 
   matches.forEach(m => {
-    const pick = document.querySelector(`input[name="match_${m.MatchID}"]:checked`);
-    if (pick) rows.push([new Date().toISOString(), user, m.MatchID, pick.value]);
+    const pick = document.querySelector(`input[name="match_${safe(m.MatchID)}"]:checked`);
+    if (pick) rows.push([new Date().toISOString(), user, safe(m.MatchID), pick.value]);
   });
 
   if (!rows.length) return alert("Pick at least one match.");
 
-  Promise.all(rows.map(r => fetch(SCRIPT_URL, { method: "POST", body: JSON.stringify(r) })))
+  Promise.all(rows.map(row => {
+    const payload = { type: "appendPrediction", row };
+    return fetch(SCRIPT_URL, { method: "POST", body: JSON.stringify(payload), mode: "no-cors" });
+  }))
     .then(() => {
       alert("Predictions submitted!");
       loadLeaderboard();
@@ -271,13 +364,14 @@ function renderLeaderboard(data) {
   ul.innerHTML = "";
 
   if (!data.length) {
-    ul.innerHTML = `<li style="opacity:.7">No entries yet.</li>`;
+    ul.innerHTML = `<li style="opacity:.8">No entries yet.</li>`;
     return;
   }
 
   data.forEach(p => {
     const user = safe(p.Username) || "Unknown";
-    const pts = cleanPoints(p.Points);
+    const ptsRaw = safe(p.Points);
+    const pts = (!ptsRaw || ptsRaw.toUpperCase() === "#N/A") ? "0" : ptsRaw;
 
     ul.innerHTML += `
       <li class="lb-row">
