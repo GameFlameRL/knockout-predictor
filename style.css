@@ -1,5 +1,5 @@
 :root{
-  --bg:#6b6b6b;          /* screenshot-ish grey stage */
+  --bg:#6b6b6b;
   --panel:#3c3c3c;
   --panel2:#2f2f2f;
   --stroke:#1f1f1f;
@@ -7,11 +7,8 @@
   --text:#ffffff;
   --muted: rgba(255,255,255,0.75);
 
-  --win:#b9ffb7;         /* winner green */
-  --win2:#7be87a;
+  --win:#b9ffb7;
   --card:#4a4a4a;
-
-  --line:#1f1f1f;
 }
 
 *{ box-sizing:border-box; }
@@ -87,13 +84,25 @@ body{
   border-radius: 12px;
   padding: 14px;
   background: rgba(0,0,0,0.12);
-  overflow-x: auto;
+
+  /* FIX: give it real height so matches aren’t clipped */
+  height: 520px;
+
+  /* FIX: scroll both ways cleanly */
+  overflow: auto;
 }
 
+/* wrapper is the absolute-position canvas for cards + lines */
 .bracket-wrap{
   position: relative;
+
+  /* FIX: ensure enough vertical space for placed cards */
+  min-height: 1200px;
+
+  /* ensure enough width for multiple rounds */
   min-width: 980px;
-  padding: 10px 10px 20px;
+
+  padding: 10px 10px 30px;
 }
 
 /* connector layer */
@@ -107,7 +116,7 @@ body{
 .columns{
   position: relative;
   display:flex;
-  gap: 38px; /* space between rounds like screenshot */
+  gap: 38px;
   align-items:flex-start;
 }
 
@@ -126,7 +135,7 @@ body{
   margin-bottom: 14px;
 }
 
-/* ===== Match cards, screenshot style ===== */
+/* ===== Match cards ===== */
 
 .match{
   width: 280px;
@@ -134,7 +143,7 @@ body{
   background: #5a5a5a;
   box-shadow: inset 0 0 0 1px rgba(0,0,0,0.35);
   margin: 0 auto;
-  position:absolute; /* we place them */
+  position:absolute;
 }
 
 .teamrow{
@@ -157,13 +166,7 @@ body{
   background: rgba(120,120,255,0.45);
   border-right: 1px solid rgba(0,0,0,0.35);
   overflow:hidden;
-}
-
-.logoBox img{
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display:block;
+  font-weight: 900;
 }
 
 .nameBox{
@@ -220,6 +223,8 @@ body{
   border-radius: 12px;
   padding: 14px;
   background: rgba(0,0,0,0.12);
+  height: 520px;
+  overflow: auto;
 }
 
 .side h2{
