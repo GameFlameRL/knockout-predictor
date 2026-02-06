@@ -10,12 +10,13 @@ const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
 const ROUND_ORDER = ["R32", "R16", "Quarter", "Semi", "Final"];
 
-// Matches your current CSS sizing
-const MATCH_HEIGHT = 112;
-const BASE_GAP = 14;
-const COL_WIDTH = 360;
-const CARD_WIDTH = 320;
-const HEADER_H = 62;
+// These match your current CSS sizing
+const COL_WIDTH = 360;      // .round width
+const CARD_WIDTH = 320;     // .match width
+const HEADER_H = 62;        // header area height
+const TOP_PAD = 14;         // padding under header
+const BASE_STEP = 130;      // vertical spacing for the first round
+const MIN_GAP = 18;         // minimum spacing between matches in a column
 
 let matches = [];
 const picksByMatch = new Map();
@@ -90,6 +91,7 @@ function isBlankSlot(team) {
 }
 
 function sortRounds(foundRounds) {
+  // Prefer the standard order, but allow extra rounds if present
   const set = new Set(foundRounds);
   const ordered = ROUND_ORDER.filter(r => set.has(r));
   const extra = [...set].filter(r => !ROUND_ORDER.includes(r)).sort();
@@ -103,33 +105,41 @@ function groupByRound(matchList) {
     if (!groups[round]) groups[round] = [];
     groups[round].push(m);
   });
-
   Object.keys(groups).forEach(r => {
     groups[r].sort((a, b) => Number(a.MatchID) - Number(b.MatchID));
   });
-
   return groups;
 }
 
-// Map: MatchID -> { nextMatchId, nextSlot } (A/B)
+// Map: MatchID -> { nextMatchId, nextSlot } where slot is A/B
 function buildNextMap() {
   const map = new Map();
   matches.forEach(m => {
     const id = safe(m.MatchID);
     const nextId = safe(m.NextMatchID);
     const slot = safe(m.NextSlot).toUpperCase();
-    if (!id) return;
-    if (!nextId) return;
+    if (!id || !nextId) return;
     if (slot !== "A" && slot !== "B") return;
     map.set(id, { nextMatchId: nextId, nextSlot: slot });
   });
   return map;
 }
 
+// Inverse map: destMatchId -> { A: sourceId, B: sourceId }
+function buildDestSources(nextMap) {
+  const destSources = new Map();
+  nextMap.forEach((link, fromId) => {
+    const destId = safe(link.nextMatchId);
+    if (!destSources.has(destId)) destSources.set(destId, {});
+    const obj = destSources.get(destId);
+    obj[link.nextSlot] = fromId;
+  });
+  return destSources;
+}
+
 // Predicted entrants propagate forward based on picks + mapping
-function computePredictedTeams() {
+function computePredictedTeams(nextMap) {
   const predicted = new Map();
-  const nextMap = buildNextMap();
 
   // Seed from sheet
   matches.forEach(m => {
@@ -139,8 +149,8 @@ function computePredictedTeams() {
     });
   });
 
-  // Multiple passes so R32 picks flow all the way to Final
-  for (let pass = 0; pass < 5; pass++) {
+  // Multiple passes so R32 picks can flow to Final
+  for (let pass = 0; pass < 6; pass++) {
     matches.forEach(m => {
       const fromId = safe(m.MatchID);
       const link = nextMap.get(fromId);
@@ -150,6 +160,7 @@ function computePredictedTeams() {
       const pick = safe(picksByMatch.get(fromId));
       if (!pick) return;
 
+      // only accept if pick matches participants
       if (pick !== fromTeams.teamA && pick !== fromTeams.teamB) return;
 
       const destId = safe(link.nextMatchId);
@@ -158,13 +169,9 @@ function computePredictedTeams() {
       const destCurrent = predicted.get(destId) || { teamA: "", teamB: "" };
 
       if (slot === "A") {
-        if (isBlankSlot(destCurrent.teamA)) {
-          predicted.set(destId, { teamA: pick, teamB: destCurrent.teamB });
-        }
+        if (isBlankSlot(destCurrent.teamA)) predicted.set(destId, { teamA: pick, teamB: destCurrent.teamB });
       } else {
-        if (isBlankSlot(destCurrent.teamB)) {
-          predicted.set(destId, { teamA: destCurrent.teamA, teamB: pick });
-        }
+        if (isBlankSlot(destCurrent.teamB)) predicted.set(destId, { teamA: destCurrent.teamA, teamB: pick });
       }
     });
   }
@@ -173,7 +180,7 @@ function computePredictedTeams() {
 }
 
 // ======================================
-// BRACKET RENDER
+// BRACKET RENDER (triangular positioning + mapped lines)
 // ======================================
 function renderBracket() {
   const columnsEl = document.getElementById("columns");
@@ -188,27 +195,32 @@ function renderBracket() {
 
   const groups = groupByRound(matches);
   const rounds = sortRounds(Object.keys(groups));
-  const predictedTeams = computePredictedTeams();
+
   const nextMap = buildNextMap();
+  const destSources = buildDestSources(nextMap);
+  const predictedTeams = computePredictedTeams(nextMap);
 
-  const roundEls = [];
-  const matchCardById = new Map(); // MatchID -> card element
+  const matchCardById = new Map();     // MatchID -> card element
+  const roundElByName = new Map();     // Round -> round element
+  const matchRoundIndex = new Map();   // MatchID -> round index (0..)
 
-  // Build columns/cards
-  rounds.forEach(roundName => {
+  // Build columns and cards (no positioning yet)
+  rounds.forEach((roundName, rIdx) => {
     const roundEl = document.createElement("div");
     roundEl.className = "round";
+    roundElByName.set(roundName, roundEl);
 
     const header = document.createElement("div");
     header.className = "round-header";
     header.textContent = roundName;
     roundEl.appendChild(header);
 
-    (groups[roundName] || []).forEach((m, i) => {
+    (groups[roundName] || []).forEach((m) => {
       const matchId = safe(m.MatchID);
+      matchRoundIndex.set(matchId, rIdx);
+
       const pred = predictedTeams.get(matchId) || { teamA: safe(m.TeamA), teamB: safe(m.TeamB) };
 
-      // Prefer sheet teams if present, otherwise predicted fill
       const teamA = safe(m.TeamA) || safe(pred.teamA);
       const teamB = safe(m.TeamB) || safe(pred.teamB);
 
@@ -234,15 +246,16 @@ function renderBracket() {
       card.className = "match";
       card.dataset.matchId = matchId;
       card.dataset.round = roundName;
-      card.dataset.index = String(i);
 
       card.innerHTML = `
-        <div class="teamrow ${aWin ? "win" : ""} ${aPicked ? "picked" : ""} ${aLoser ? "loser" : ""} ${aDisabled ? "disabled" : ""}" data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamA)}">
+        <div class="teamrow ${aWin ? "win" : ""} ${aPicked ? "picked" : ""} ${aLoser ? "loser" : ""} ${aDisabled ? "disabled" : ""}"
+             data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamA)}" data-slot="A">
           <div class="logoBox">${displayA === "TBD" ? "" : initials(displayA)}</div>
           <div class="nameBox">${escapeHtml(displayA)}</div>
           <div class="scoreBox">${aPicked ? "✓" : ""}</div>
         </div>
-        <div class="teamrow ${bWin ? "win" : ""} ${bPicked ? "picked" : ""} ${bLoser ? "loser" : ""} ${bDisabled ? "disabled" : ""}" data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamB)}">
+        <div class="teamrow ${bWin ? "win" : ""} ${bPicked ? "picked" : ""} ${bLoser ? "loser" : ""} ${bDisabled ? "disabled" : ""}"
+             data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamB)}" data-slot="B">
           <div class="logoBox">${displayB === "TBD" ? "" : initials(displayB)}</div>
           <div class="nameBox">${escapeHtml(displayB)}</div>
           <div class="scoreBox">${bPicked ? "✓" : ""}</div>
@@ -270,65 +283,123 @@ function renderBracket() {
     });
 
     columnsEl.appendChild(roundEl);
-    roundEls.push(roundEl);
   });
 
-  // Position cards
-  roundEls.forEach((roundEl, rIdx) => {
-    const cards = [...roundEl.querySelectorAll(".match")];
-    const gap = BASE_GAP * Math.pow(2, rIdx);
-    const step = MATCH_HEIGHT + gap;
-    const topOffset = HEADER_H + gap / 2;
+  // We need actual card height for accurate positioning
+  const anyCard = columnsEl.querySelector(".match");
+  const cardH = anyCard ? anyCard.offsetHeight : 92;
 
-    cards.forEach((card, i) => {
-      card.style.left = `${(COL_WIDTH - CARD_WIDTH) / 2}px`;
-      card.style.top = `${topOffset + i * step}px`;
+  // Compute triangular Y centers
+  const yCenterById = new Map();
+
+  // Pass 1: base round uses simple stacking
+  const baseRoundName = rounds[0];
+  const baseRoundEl = roundElByName.get(baseRoundName);
+  const baseCards = baseRoundEl ? [...baseRoundEl.querySelectorAll(".match")] : [];
+
+  baseCards.forEach((card, i) => {
+    const mid = safe(card.dataset.matchId);
+    const yCenter = HEADER_H + TOP_PAD + (cardH / 2) + i * BASE_STEP;
+    yCenterById.set(mid, yCenter);
+  });
+
+  // Pass 2+: for each later round, place match at midpoint of its two feeder matches (A + B)
+  for (let rIdx = 1; rIdx < rounds.length; rIdx++) {
+    const roundName = rounds[rIdx];
+    const roundEl = roundElByName.get(roundName);
+    if (!roundEl) continue;
+
+    const cards = [...roundEl.querySelectorAll(".match")];
+
+    // fallback stack index if mapping incomplete
+    let fallbackIndex = 0;
+
+    cards.forEach(card => {
+      const mid = safe(card.dataset.matchId);
+      const feeders = destSources.get(mid) || {};
+      const aSrc = feeders.A ? safe(feeders.A) : "";
+      const bSrc = feeders.B ? safe(feeders.B) : "";
+
+      const yA = aSrc ? yCenterById.get(aSrc) : null;
+      const yB = bSrc ? yCenterById.get(bSrc) : null;
+
+      let yCenter;
+      if (typeof yA === "number" && typeof yB === "number") {
+        yCenter = (yA + yB) / 2;
+      } else {
+        // mapping missing or sources not in earlier rounds yet
+        yCenter = HEADER_H + TOP_PAD + (cardH / 2) + fallbackIndex * Math.max(BASE_STEP, cardH + MIN_GAP);
+        fallbackIndex++;
+      }
+
+      yCenterById.set(mid, yCenter);
     });
+  }
+
+  // Apply X/Y positions to every card (triangular look)
+  rounds.forEach((roundName, rIdx) => {
+    const roundEl = roundElByName.get(roundName);
+    if (!roundEl) return;
+
+    // Ensure each column has enough height for its lowest card
+    let maxBottom = HEADER_H + TOP_PAD;
+
+    const cards = [...roundEl.querySelectorAll(".match")];
+    cards.forEach(card => {
+      const mid = safe(card.dataset.matchId);
+      const yCenter = yCenterById.get(mid) ?? (HEADER_H + TOP_PAD + cardH / 2);
+
+      const top = yCenter - (cardH / 2);
+      card.style.left = `${(COL_WIDTH - CARD_WIDTH) / 2}px`;
+      card.style.top = `${Math.max(HEADER_H + TOP_PAD, top)}px`;
+
+      const bottom = Math.max(HEADER_H + TOP_PAD, top) + cardH;
+      if (bottom > maxBottom) maxBottom = bottom;
+    });
+
+    roundEl.style.minHeight = `${maxBottom + 30}px`;
   });
 
   // Wrapper size for SVG coordinate space
-  const contentW = columnsEl.scrollWidth + 24;
-  const contentH = columnsEl.scrollHeight + 180;
+  const contentW = columnsEl.scrollWidth + 30;
+  const contentH = columnsEl.scrollHeight + 220;
   wrap.style.width = `${contentW}px`;
   wrap.style.height = `${contentH}px`;
 
   svg.setAttribute("width", contentW);
   svg.setAttribute("height", contentH);
 
-  // Draw connector lines using the mapping
-  // Source match -> destination match slot
+  // Draw mapped connectors (to correct slot row center)
   nextMap.forEach((link, fromId) => {
     const fromCard = matchCardById.get(fromId);
     const toCard = matchCardById.get(safe(link.nextMatchId));
     if (!fromCard || !toCard) return;
-
-    // slot A means connect to top row center, slot B to bottom row center
     drawMappedConnector(svg, wrap, fromCard, toCard, link.nextSlot);
   });
 }
 
-// Draw one line from a match card (right middle) to the correct slot (A top / B bottom) of destination card
+// Draw from card right-middle -> destination slot (A top row center / B bottom row center)
 function drawMappedConnector(svg, wrap, fromCard, toCard, toSlot) {
   const scale = currentScale || 1;
 
   const w = wrap.getBoundingClientRect();
   const rf = fromCard.getBoundingClientRect();
-  const rt = toCard.getBoundingClientRect();
 
-  // Source point: right-middle of from card
+  // Source point: right-middle of the whole card
   const sx = (rf.right - w.left) / scale;
   const sy = (rf.top - w.top + rf.height / 2) / scale;
 
-  // Destination point: left-middle of the target slot (top row or bottom row)
-  const rowHeight = rf.height / 2; // card has two rows stacked
-  const targetY =
+  // Destination point: left-middle of the actual target row
+  const targetRow =
     toSlot === "A"
-      ? (rt.top - w.top + rowHeight / 2) / scale
-      : (rt.top - w.top + rowHeight + rowHeight / 2) / scale;
+      ? toCard.querySelector('.teamrow[data-slot="A"]')
+      : toCard.querySelector('.teamrow[data-slot="B"]');
 
-  const tx = (rt.left - w.left) / scale;
-  const ty = targetY;
+  const rr = targetRow ? targetRow.getBoundingClientRect() : toCard.getBoundingClientRect();
+  const tx = (rr.left - w.left) / scale;
+  const ty = (rr.top - w.top + rr.height / 2) / scale;
 
+  // Nice elbow shape
   const midX = sx + 30;
 
   const paths = [
@@ -357,7 +428,7 @@ function fitBracket() {
   if (!stage || !wrap || !columns) return;
 
   const contentW = columns.scrollWidth + 40;
-  const contentH = columns.scrollHeight + 220;
+  const contentH = columns.scrollHeight + 240;
 
   const viewW = stage.clientWidth - 28;
   const viewH = stage.clientHeight - 28;
@@ -430,44 +501,7 @@ function syncBracketToSheet() {
     });
 
     chain.then(() => loadMatches()).catch(() => {});
-    return;
   }
-
-  // Fallback pairing (if no mapping columns used)
-  const groups = groupByRound(matches);
-  const rounds = sortRounds(Object.keys(groups));
-  const updates = [];
-
-  for (let r = 0; r < rounds.length - 1; r++) {
-    const curr = groups[rounds[r]] || [];
-    const next = groups[rounds[r + 1]] || [];
-
-    for (let j = 0; j < next.length; j++) {
-      const m1 = curr[j * 2];
-      const m2 = curr[j * 2 + 1];
-      const dest = next[j];
-      if (!m1 || !m2 || !dest) continue;
-
-      const w1 = safe(m1.Winner);
-      const w2 = safe(m2.Winner);
-      if (!w1 || !w2) continue;
-
-      updates.push({ type: "setMatchTeams", matchId: safe(dest.MatchID), teamA: w1, teamB: w2 });
-    }
-  }
-
-  if (!updates.length) return;
-
-  let chain = Promise.resolve();
-  updates.forEach(u => {
-    chain = chain.then(() => fetch(SCRIPT_URL, {
-      method: "POST",
-      body: JSON.stringify(u),
-      mode: "no-cors"
-    }));
-  });
-
-  chain.then(() => loadMatches()).catch(() => {});
 }
 
 // ======================================
