@@ -10,16 +10,16 @@ const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
 const ROUND_ORDER = ["R32", "R16", "Quarter", "Semi", "Final"];
 
-// sizing
-const COL_WIDTH = 360;
+// sizing (tuned for tighter triangle)
+const COL_WIDTH = 340;
 const CARD_WIDTH = 320;
 const HEADER_H = 62;
 const TOP_PAD = 14;
-const BASE_STEP = 130;
-const MIN_GAP = 18;
+const BASE_STEP = 118;     // smaller = less vertical gaps
+const MIN_GAP = 16;
 
 let matches = [];
-const picksByMatch = new Map(); // user picks (manual)
+const picksByMatch = new Map();
 
 let userZoom = 1;
 let fittedZoom = 1;
@@ -74,9 +74,7 @@ function loadLeaderboard() {
 // ======================================
 // HELPERS
 // ======================================
-function safe(v) {
-  return (v ?? "").toString().trim();
-}
+function safe(v) { return (v ?? "").toString().trim(); }
 
 function initials(name) {
   return safe(name)
@@ -96,7 +94,6 @@ function isBye(team) {
   return safe(team).toLowerCase() === "bye";
 }
 
-// If one team is Bye and the other is real, return the real team; else "".
 function autoByePick(teamA, teamB) {
   const aBye = isBye(teamA);
   const bBye = isBye(teamB);
@@ -125,7 +122,6 @@ function groupByRound(matchList) {
   return groups;
 }
 
-// Map: MatchID -> { nextMatchId, nextSlot }
 function buildNextMap() {
   const map = new Map();
   matches.forEach(m => {
@@ -139,7 +135,6 @@ function buildNextMap() {
   return map;
 }
 
-// Inverse: destMatchId -> { A: sourceId, B: sourceId }
 function buildDestSources(nextMap) {
   const destSources = new Map();
   nextMap.forEach((link, fromId) => {
@@ -150,7 +145,6 @@ function buildDestSources(nextMap) {
   return destSources;
 }
 
-// Side assignment: split each round list in half. Final is center.
 function buildSideMap(groups, rounds) {
   const sideById = new Map();
   rounds.forEach(r => {
@@ -169,7 +163,7 @@ function buildSideMap(groups, rounds) {
 }
 
 // ======================================
-// PREDICTION FLOW (manual picks + auto BYE picks)
+// PREDICTED FLOW (manual + BYE auto-picks)
 // ======================================
 function computePredictedTeams(nextMap) {
   const predicted = new Map();
@@ -215,7 +209,7 @@ function computePredictedTeams(nextMap) {
 }
 
 // ======================================
-// RENDER: Left triangle + Right triangle -> Final
+// RENDER (two triangles -> Final)
 // ======================================
 function renderBracket() {
   const columnsEl = document.getElementById("columns");
@@ -237,11 +231,12 @@ function renderBracket() {
   const finalRoundName = rounds.find(r => r.toLowerCase() === "final") || "Final";
   const sideRounds = rounds.filter(r => r !== finalRoundName);
 
-  // panes
+  // ✅ Center the whole bracket group so it forms triangles (not stretched)
   columnsEl.style.display = "flex";
   columnsEl.style.alignItems = "flex-start";
-  columnsEl.style.justifyContent = "space-between";
-  columnsEl.style.gap = "28px";
+  columnsEl.style.justifyContent = "center";
+  columnsEl.style.gap = "22px";
+  columnsEl.style.padding = "0 20px";
 
   const leftPane = document.createElement("div");
   const centerPane = document.createElement("div");
@@ -251,13 +246,9 @@ function renderBracket() {
     p.style.display = "flex";
     p.style.flexDirection = "row";
     p.style.alignItems = "flex-start";
-    p.style.gap = "12px";
+    p.style.gap = "10px";
+    p.style.flex = "0 0 auto";
   });
-
-  leftPane.style.flex = "1 1 0";
-  centerPane.style.flex = "0 0 auto";
-  rightPane.style.flex = "1 1 0";
-  rightPane.style.justifyContent = "flex-end";
 
   columnsEl.appendChild(leftPane);
   columnsEl.appendChild(centerPane);
@@ -265,19 +256,19 @@ function renderBracket() {
 
   const matchCardById = new Map();
 
-  // LEFT triangle
+  // LEFT
   sideRounds.forEach(r => {
     const col = buildRoundColumn(r, groups, predictedTeams, matchCardById);
     filterRoundCardsBySide(col, sideById, "L");
     leftPane.appendChild(col);
   });
 
-  // CENTER: Final
+  // CENTER Final
   const finalCol = buildRoundColumn(finalRoundName, groups, predictedTeams, matchCardById);
   filterRoundCardsBySide(finalCol, sideById, "C");
   centerPane.appendChild(finalCol);
 
-  // RIGHT triangle (columns reversed so Semi is near center)
+  // RIGHT (reversed)
   [...sideRounds].reverse().forEach(r => {
     const col = buildRoundColumn(r, groups, predictedTeams, matchCardById);
     filterRoundCardsBySide(col, sideById, "R");
@@ -287,7 +278,7 @@ function renderBracket() {
   const anyCard = columnsEl.querySelector(".match");
   const cardH = anyCard ? anyCard.offsetHeight : 92;
 
-  // Triangular vertical placement: y-centers from feeder midpoints
+  // y-centers from feeder midpoints
   const yCenterById = new Map();
 
   function stackBase(list) {
@@ -367,7 +358,7 @@ function renderBracket() {
   svg.setAttribute("width", contentW);
   svg.setAttribute("height", contentH);
 
-  // Draw lines direction-aware
+  // Draw connector lines
   nextMap.forEach((link, fromId) => {
     const fromCard = matchCardById.get(fromId);
     const toCard = matchCardById.get(safe(link.nextMatchId));
@@ -379,6 +370,7 @@ function renderBracket() {
 function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
   const roundEl = document.createElement("div");
   roundEl.className = "round";
+  roundEl.style.width = `${COL_WIDTH}px`;
 
   const header = document.createElement("div");
   header.className = "round-header";
@@ -401,52 +393,48 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
     const byePick = autoByePick(displayA, displayB);
     const picked = manualPick || byePick;
 
-    const aPicked = picked && picked === teamA;
-    const bPicked = picked && picked === teamB;
+    const aPicked = picked && picked === teamA && !isBye(teamA);
+    const bPicked = picked && picked === teamB && !isBye(teamB);
 
     const aIsBye = isBye(displayA);
     const bIsBye = isBye(displayB);
-    const hasBye = aIsBye || bIsBye;
 
     const card = document.createElement("div");
     card.className = "match";
     card.dataset.matchId = matchId;
     card.dataset.round = roundName;
 
-    // ✅ critical: keep BYE badge contained
+    // keep any label confined
     card.style.position = "relative";
     card.style.overflow = "hidden";
 
-    // Use visibility hidden to preserve layout without weird opacity overlays
-    const byeHideStyle = "visibility:hidden; pointer-events:none;";
+    // ✅ BYE row stays in its normal row position and DOES NOT overlap ✓
+    // We render BYE text in the scoreBox of the bye row, and hide the rest of that row.
+    const byeRowStyle = "pointer-events:none;";
+    const byeLogoStyle = "visibility:hidden;";
+    const byeNameStyle = "visibility:hidden;";
+    const byeScoreStyle =
+      "visibility:visible; font-size:11px; opacity:0.85; letter-spacing:0.3px;";
 
     card.innerHTML = `
-      ${hasBye ? `
-        <div class="byeBadge"
-             style="position:absolute; right:8px; top:8px; z-index:3; pointer-events:none;
-                    font-size:11px; padding:2px 6px; border-radius:6px;
-                    background:rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.12);">
-          BYE
-        </div>
-      ` : ""}
-
       <div class="teamrow ${aPicked ? "picked" : ""} ${displayA === "TBD" ? "disabled" : ""} ${aIsBye ? "bye" : ""}"
-           style="${aIsBye ? byeHideStyle : ""}"
+           style="${aIsBye ? byeRowStyle : ""}"
            data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamA)}" data-slot="A">
-        <div class="logoBox">${displayA === "TBD" || aIsBye ? "" : initials(displayA)}</div>
-        <div class="nameBox">${escapeHtml(displayA)}</div>
-        <div class="scoreBox">${aPicked ? "✓" : ""}</div>
+        <div class="logoBox" style="${aIsBye ? byeLogoStyle : ""}">${displayA === "TBD" || aIsBye ? "" : initials(displayA)}</div>
+        <div class="nameBox" style="${aIsBye ? byeNameStyle : ""}">${escapeHtml(displayA)}</div>
+        <div class="scoreBox" style="${aIsBye ? byeScoreStyle : ""}">${aIsBye ? "BYE" : (aPicked ? "✓" : "")}</div>
       </div>
 
       <div class="teamrow ${bPicked ? "picked" : ""} ${displayB === "TBD" ? "disabled" : ""} ${bIsBye ? "bye" : ""}"
-           style="${bIsBye ? byeHideStyle : ""}"
+           style="${bIsBye ? byeRowStyle : ""}"
            data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamB)}" data-slot="B">
-        <div class="logoBox">${displayB === "TBD" || bIsBye ? "" : initials(displayB)}</div>
-        <div class="nameBox">${escapeHtml(displayB)}</div>
-        <div class="scoreBox">${bPicked ? "✓" : ""}</div>
+        <div class="logoBox" style="${bIsBye ? byeLogoStyle : ""}">${displayB === "TBD" || bIsBye ? "" : initials(displayB)}</div>
+        <div class="nameBox" style="${bIsBye ? byeNameStyle : ""}">${escapeHtml(displayB)}</div>
+        <div class="scoreBox" style="${bIsBye ? byeScoreStyle : ""}">${bIsBye ? "BYE" : (bPicked ? "✓" : "")}</div>
       </div>
     `;
 
+    // click-to-pick (ignore BYE + TBD)
     card.querySelectorAll(".teamrow").forEach(row => {
       row.addEventListener("click", () => {
         const mid = safe(row.getAttribute("data-match"));
@@ -476,7 +464,7 @@ function filterRoundCardsBySide(roundEl, sideById, wantedSide) {
   });
 }
 
-// Direction-aware connector (left->right OR right->left)
+// Direction-aware connector
 function drawMappedConnectorDirectional(svg, wrap, fromCard, toCard, toSlot) {
   const scale = currentScale || 1;
 
@@ -500,7 +488,7 @@ function drawMappedConnectorDirectional(svg, wrap, fromCard, toCard, toSlot) {
   const tx = (goingRight ? (rr.left - w.left) : (rr.right - w.left)) / scale;
   const ty = (rr.top - w.top + rr.height / 2) / scale;
 
-  const elbow = 30;
+  const elbow = 28;
   const midX = goingRight ? (sx + elbow) : (sx - elbow);
 
   const segs = [
