@@ -110,7 +110,7 @@ function groupByRound(matchList) {
   return groups;
 }
 
-// Map: MatchID -> { nextMatchId, nextSlot } where slot is A/B
+// Map: MatchID -> { nextMatchId, nextSlot }
 function buildNextMap() {
   const map = new Map();
   matches.forEach(m => {
@@ -124,7 +124,7 @@ function buildNextMap() {
   return map;
 }
 
-// Inverse map: destMatchId -> { A: sourceId, B: sourceId }
+// Inverse: destMatchId -> { A: sourceId, B: sourceId }
 function buildDestSources(nextMap) {
   const destSources = new Map();
   nextMap.forEach((link, fromId) => {
@@ -135,9 +135,9 @@ function buildDestSources(nextMap) {
   return destSources;
 }
 
-// Auto side assignment: first half of matches in a round is LEFT, second half is RIGHT. Final is CENTER.
+// Side assignment: split each round list in half. Final is center.
 function buildSideMap(groups, rounds) {
-  const sideById = new Map(); // MatchID -> "L"|"R"|"C"
+  const sideById = new Map();
   rounds.forEach(r => {
     const list = groups[r] || [];
     if (!list.length) return;
@@ -153,14 +153,12 @@ function buildSideMap(groups, rounds) {
   return sideById;
 }
 
-// Predicted entrants propagate forward based on picks + mapping
+// Predicted teams flow forward based on picks
 function computePredictedTeams(nextMap) {
   const predicted = new Map();
-  matches.forEach(m => {
-    predicted.set(safe(m.MatchID), { teamA: safe(m.TeamA), teamB: safe(m.TeamB) });
-  });
+  matches.forEach(m => predicted.set(safe(m.MatchID), { teamA: safe(m.TeamA), teamB: safe(m.TeamB) }));
 
-  for (let pass = 0; pass < 7; pass++) {
+  for (let pass = 0; pass < 8; pass++) {
     matches.forEach(m => {
       const fromId = safe(m.MatchID);
       const link = nextMap.get(fromId);
@@ -187,7 +185,7 @@ function computePredictedTeams(nextMap) {
 }
 
 // ======================================
-// BRACKET RENDER (triangle into triangle)
+// RENDER: Left triangle + Right triangle -> Final
 // ======================================
 function renderBracket() {
   const columnsEl = document.getElementById("columns");
@@ -206,11 +204,14 @@ function renderBracket() {
   const predictedTeams = computePredictedTeams(nextMap);
   const sideById = buildSideMap(groups, rounds);
 
+  const finalRoundName = rounds.find(r => r.toLowerCase() === "final") || "Final";
+  const sideRounds = rounds.filter(r => r !== finalRoundName);
+
   // panes
   columnsEl.style.display = "flex";
   columnsEl.style.alignItems = "flex-start";
   columnsEl.style.justifyContent = "space-between";
-  columnsEl.style.gap = "24px";
+  columnsEl.style.gap = "28px";
 
   const leftPane = document.createElement("div");
   const centerPane = document.createElement("div");
@@ -234,50 +235,52 @@ function renderBracket() {
 
   const matchCardById = new Map();
 
-  const finalRoundName = rounds.find(r => r.toLowerCase() === "final") || "Final";
-  const sideRounds = rounds.filter(r => r !== finalRoundName);
-
-  // Left: outer -> inner (toward center)
-  sideRounds.forEach(roundName => {
-    const col = buildRoundColumn(roundName, groups, predictedTeams, matchCardById);
+  // LEFT triangle: outer -> inner (R32 ... Semi)
+  sideRounds.forEach(r => {
+    const col = buildRoundColumn(r, groups, predictedTeams, matchCardById);
     filterRoundCardsBySide(col, sideById, "L");
     leftPane.appendChild(col);
   });
 
-  // Center: Final only
+  // CENTER: Final
   const finalCol = buildRoundColumn(finalRoundName, groups, predictedTeams, matchCardById);
   filterRoundCardsBySide(finalCol, sideById, "C");
   centerPane.appendChild(finalCol);
 
-  // Right: inner -> outer would look wrong, we want outer -> inner but mirrored.
-  // So we still append columns in REVERSE order (outer far right, inner near center).
-  [...sideRounds].reverse().forEach(roundName => {
-    const col = buildRoundColumn(roundName, groups, predictedTeams, matchCardById);
+  // RIGHT triangle: outer -> inner but mirrored
+  // We still append columns reversed so that Semi sits closest to center.
+  [...sideRounds].reverse().forEach(r => {
+    const col = buildRoundColumn(r, groups, predictedTeams, matchCardById);
     filterRoundCardsBySide(col, sideById, "R");
     rightPane.appendChild(col);
   });
 
-  // measure card height
   const anyCard = columnsEl.querySelector(".match");
   const cardH = anyCard ? anyCard.offsetHeight : 92;
 
-  // Compute triangular y centers per side, then final centered between semis
+  // --- Triangular vertical placement ---
+  // We must compute y-centers based on FEEDER MIDPOINTS, but do it per side.
   const yCenterById = new Map();
 
-  // Base round = earliest side round (usually R32)
-  const baseRoundName = sideRounds[0] || rounds[0];
-  const baseList = (groups[baseRoundName] || []);
+  // Helper to stack a base round side list
+  function stackBase(list) {
+    list.forEach((m, i) => {
+      yCenterById.set(safe(m.MatchID), HEADER_H + TOP_PAD + cardH / 2 + i * BASE_STEP);
+    });
+  }
 
-  const baseLeft = baseList.filter(m => sideById.get(safe(m.MatchID)) === "L");
-  const baseRight = baseList.filter(m => sideById.get(safe(m.MatchID)) === "R");
+  // Base round is earliest (usually R32)
+  const baseRound = sideRounds[0] || rounds[0];
+  const baseList = groups[baseRound] || [];
 
-  baseLeft.forEach((m, i) => yCenterById.set(safe(m.MatchID), HEADER_H + TOP_PAD + cardH / 2 + i * BASE_STEP));
-  baseRight.forEach((m, i) => yCenterById.set(safe(m.MatchID), HEADER_H + TOP_PAD + cardH / 2 + i * BASE_STEP));
+  stackBase(baseList.filter(m => sideById.get(safe(m.MatchID)) === "L"));
+  stackBase(baseList.filter(m => sideById.get(safe(m.MatchID)) === "R"));
 
-  // Later rounds: center between feeders, separately for L and R
-  for (let rIdx = 1; rIdx < sideRounds.length; rIdx++) {
-    const roundName = sideRounds[rIdx];
-    const list = groups[roundName] || [];
+  // For later rounds on each side, set y = midpoint of its two feeder matches
+  for (let i = 1; i < sideRounds.length; i++) {
+    const r = sideRounds[i];
+    const list = groups[r] || [];
+
     ["L", "R"].forEach(side => {
       const sideList = list.filter(m => sideById.get(safe(m.MatchID)) === side);
       let fallbackIndex = 0;
@@ -300,14 +303,12 @@ function renderBracket() {
     });
   }
 
-  // Final: center between its two feeder semis
-  const finals = groups[finalRoundName] || [];
-  finals.forEach(m => {
+  // Final y centered between its two feeder semis (usually L semi + R semi)
+  (groups[finalRoundName] || []).forEach(m => {
     const mid = safe(m.MatchID);
     const feeders = destSources.get(mid) || {};
     const aSrc = feeders.A ? safe(feeders.A) : "";
     const bSrc = feeders.B ? safe(feeders.B) : "";
-
     const yA = aSrc ? yCenterById.get(aSrc) : null;
     const yB = bSrc ? yCenterById.get(bSrc) : null;
 
@@ -317,7 +318,7 @@ function renderBracket() {
     else yCenterById.set(mid, HEADER_H + TOP_PAD + cardH / 2);
   });
 
-  // Apply positions
+  // Apply positions to cards
   columnsEl.querySelectorAll(".round").forEach(roundEl => {
     let maxBottom = HEADER_H + TOP_PAD;
     const cards = [...roundEl.querySelectorAll(".match")];
@@ -327,26 +328,23 @@ function renderBracket() {
       const mid = safe(card.dataset.matchId);
       const yCenter = yCenterById.get(mid) ?? (HEADER_H + TOP_PAD + cardH / 2 + fallbackIndex++ * BASE_STEP);
       const top = Math.max(HEADER_H + TOP_PAD, yCenter - cardH / 2);
-
       card.style.left = `${(COL_WIDTH - CARD_WIDTH) / 2}px`;
       card.style.top = `${top}px`;
-
       maxBottom = Math.max(maxBottom, top + cardH);
     });
 
     roundEl.style.minHeight = `${maxBottom + 30}px`;
   });
 
-  // Update wrap & SVG size
+  // Update wrap & svg
   const contentW = columnsEl.scrollWidth + 30;
   const contentH = columnsEl.scrollHeight + 240;
   wrap.style.width = `${contentW}px`;
   wrap.style.height = `${contentH}px`;
-
   svg.setAttribute("width", contentW);
   svg.setAttribute("height", contentH);
 
-  // Draw mapped connectors with direction-aware edges (fixes right side spaghetti)
+  // Draw lines (direction-aware) so right side mirrors correctly
   nextMap.forEach((link, fromId) => {
     const fromCard = matchCardById.get(fromId);
     const toCard = matchCardById.get(safe(link.nextMatchId));
@@ -355,7 +353,6 @@ function renderBracket() {
   });
 }
 
-// Build a round column (unfiltered)
 function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
   const roundEl = document.createElement("div");
   roundEl.className = "round";
@@ -365,8 +362,7 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
   header.textContent = roundName;
   roundEl.appendChild(header);
 
-  const list = groups[roundName] || [];
-  list.forEach(m => {
+  (groups[roundName] || []).forEach(m => {
     const matchId = safe(m.MatchID);
     const pred = predictedTeams.get(matchId) || { teamA: safe(m.TeamA), teamB: safe(m.TeamB) };
 
@@ -379,17 +375,8 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
     const winner = safe(m.Winner);
     const picked = safe(picksByMatch.get(matchId));
 
-    const aWin = winner && winner === teamA;
-    const bWin = winner && winner === teamB;
-
     const aPicked = picked && picked === teamA;
     const bPicked = picked && picked === teamB;
-
-    const aDisabled = displayA === "TBD";
-    const bDisabled = displayB === "TBD";
-
-    const aLoser = picked && picked !== teamA;
-    const bLoser = picked && picked !== teamB;
 
     const card = document.createElement("div");
     card.className = "match";
@@ -397,13 +384,13 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
     card.dataset.round = roundName;
 
     card.innerHTML = `
-      <div class="teamrow ${aWin ? "win" : ""} ${aPicked ? "picked" : ""} ${aLoser ? "loser" : ""} ${aDisabled ? "disabled" : ""}"
+      <div class="teamrow ${aPicked ? "picked" : ""} ${displayA === "TBD" ? "disabled" : ""}"
            data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamA)}" data-slot="A">
         <div class="logoBox">${displayA === "TBD" ? "" : initials(displayA)}</div>
         <div class="nameBox">${escapeHtml(displayA)}</div>
         <div class="scoreBox">${aPicked ? "✓" : ""}</div>
       </div>
-      <div class="teamrow ${bWin ? "win" : ""} ${bPicked ? "picked" : ""} ${bLoser ? "loser" : ""} ${bDisabled ? "disabled" : ""}"
+      <div class="teamrow ${bPicked ? "picked" : ""} ${displayB === "TBD" ? "disabled" : ""}"
            data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamB)}" data-slot="B">
         <div class="logoBox">${displayB === "TBD" ? "" : initials(displayB)}</div>
         <div class="nameBox">${escapeHtml(displayB)}</div>
@@ -418,7 +405,6 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
         if (!mid || !team) return;
         if (isBlankSlot(team)) return;
         if (winner) return;
-
         picksByMatch.set(mid, team);
         renderBracket();
         fitBracket();
@@ -440,7 +426,7 @@ function filterRoundCardsBySide(roundEl, sideById, wantedSide) {
   });
 }
 
-// ✅ FIX: draw connectors correctly for BOTH directions (left->right and right->left)
+// Direction-aware connector: fixes right side lines
 function drawMappedConnectorDirectional(svg, wrap, fromCard, toCard, toSlot) {
   const scale = currentScale || 1;
 
@@ -452,31 +438,28 @@ function drawMappedConnectorDirectional(svg, wrap, fromCard, toCard, toSlot) {
       ? toCard.querySelector('.teamrow[data-slot="A"]')
       : toCard.querySelector('.teamrow[data-slot="B"]');
 
-  const rr = targetRow ? targetRow.getBoundingClientRect() : toCard.getBoundingClientRect();
+  const rr = (targetRow ? targetRow.getBoundingClientRect() : toCard.getBoundingClientRect());
 
-  // Determine direction by comparing card centers
   const fromCX = (rf.left + rf.right) / 2;
   const toCX = (rr.left + rr.right) / 2;
   const goingRight = toCX >= fromCX;
 
-  // Source edge and destination edge based on direction
   const sx = (goingRight ? (rf.right - w.left) : (rf.left - w.left)) / scale;
   const sy = (rf.top - w.top + rf.height / 2) / scale;
 
   const tx = (goingRight ? (rr.left - w.left) : (rr.right - w.left)) / scale;
   const ty = (rr.top - w.top + rr.height / 2) / scale;
 
-  // Elbow: push a bit outward in the direction of travel
   const elbow = 30;
   const midX = goingRight ? (sx + elbow) : (sx - elbow);
 
-  const paths = [
+  const segs = [
     `M ${sx} ${sy} L ${midX} ${sy}`,
     `M ${midX} ${sy} L ${midX} ${ty}`,
     `M ${midX} ${ty} L ${tx} ${ty}`
   ];
 
-  paths.forEach(d => {
+  segs.forEach(d => {
     const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
     p.setAttribute("d", d);
     p.setAttribute("stroke", "rgba(0,0,0,0.60)");
@@ -512,19 +495,11 @@ function applyZoom() {
   wrap.style.transform = `scale(${currentScale})`;
 }
 
-function zoomIn() {
-  userZoom = Math.min(2.0, userZoom + 0.1);
-  applyZoom();
-  renderBracket();
-}
-function zoomOut() {
-  userZoom = Math.max(0.4, userZoom - 0.1);
-  applyZoom();
-  renderBracket();
-}
+function zoomIn() { userZoom = Math.min(2.0, userZoom + 0.1); applyZoom(); renderBracket(); }
+function zoomOut() { userZoom = Math.max(0.4, userZoom - 0.1); applyZoom(); renderBracket(); }
 
 // ======================================
-// SYNC OFFICIAL WINNERS INTO SHEET (mapping)
+// SYNC OFFICIAL WINNERS INTO SHEET
 // ======================================
 function syncBracketToSheet() {
   if (!matches.length) return;
@@ -532,8 +507,7 @@ function syncBracketToSheet() {
   const nextMap = buildNextMap();
   if (nextMap.size === 0) return;
 
-  const updatesByDest = new Map(); // destId -> {teamA, teamB}
-
+  const updatesByDest = new Map();
   matches.forEach(m => {
     const fromId = safe(m.MatchID);
     const link = nextMap.get(fromId);
@@ -544,7 +518,6 @@ function syncBracketToSheet() {
 
     const destId = safe(link.nextMatchId);
     if (!updatesByDest.has(destId)) updatesByDest.set(destId, {});
-
     const u = updatesByDest.get(destId);
     if (link.nextSlot === "A") u.teamA = win;
     if (link.nextSlot === "B") u.teamB = win;
@@ -560,11 +533,7 @@ function syncBracketToSheet() {
 
   let chain = Promise.resolve();
   payloads.forEach(p => {
-    chain = chain.then(() => fetch(SCRIPT_URL, {
-      method: "POST",
-      body: JSON.stringify(p),
-      mode: "no-cors"
-    }));
+    chain = chain.then(() => fetch(SCRIPT_URL, { method: "POST", body: JSON.stringify(p), mode: "no-cors" }));
   });
 
   chain.then(() => loadMatches()).catch(() => {});
@@ -590,10 +559,7 @@ function submitPredictions() {
     const payload = { type: "appendPrediction", row };
     return fetch(SCRIPT_URL, { method: "POST", body: JSON.stringify(payload), mode: "no-cors" });
   }))
-    .then(() => {
-      alert("Predictions submitted!");
-      loadLeaderboard();
-    })
+    .then(() => { alert("Predictions submitted!"); loadLeaderboard(); })
     .catch(() => alert("Submission failed. Check Apps Script deployment."));
 }
 
@@ -625,9 +591,6 @@ function renderLeaderboard(data) {
   });
 }
 
-// ======================================
-// UTIL
-// ======================================
 function escapeHtml(str) {
   return String(str)
     .replaceAll("&", "&amp;")
