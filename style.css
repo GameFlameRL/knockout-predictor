@@ -7,6 +7,8 @@
   --muted: rgba(255,255,255,0.75);
 
   --win:#b9ffb7;
+  --pick: rgba(255,255,255,0.20);
+  --pickGlow: rgba(255,255,255,0.35);
 }
 
 *{ box-sizing:border-box; }
@@ -97,14 +99,8 @@ body{
   padding: 12px;
   margin-bottom: 14px;
 }
-
 .debug-panel.hidden{ display:none; }
-
-.debug-title{
-  font-weight: 900;
-  margin-bottom: 8px;
-}
-
+.debug-title{ font-weight: 900; margin-bottom: 8px; }
 .debug-text{
   font-family: Consolas, monospace;
   font-size: 12px;
@@ -113,75 +109,54 @@ body{
 }
 
 /* ===== Layout ===== */
-
 .layout{
   display:grid;
   grid-template-columns: 1fr 320px;
   gap: 14px;
 }
-
 @media (max-width: 980px){
   .layout{ grid-template-columns: 1fr; }
 }
 
 /* ===== Bracket stage ===== */
-
 .stage{
   position: relative;
   border-radius: 12px;
   padding: 14px;
   background: rgba(0,0,0,0.12);
-
-  /* no scrolling now */
   overflow: hidden;
-
-  /* clean fixed viewing area */
   height: 520px;
 }
-
-/* viewport holds the scaled bracket */
 .bracket-viewport{
   width: 100%;
   height: 100%;
   position: relative;
 }
-
-/* wrapper is the canvas for cards + lines */
 .bracket-wrap{
   position: absolute;
   top: 0;
   left: 0;
-
   transform-origin: top left;
   will-change: transform;
-
-  /* These are “natural” sizes before scaling */
   min-height: 1200px;
   min-width: 980px;
-
   padding: 10px 10px 30px;
 }
-
-/* connector layer */
 #lines{
   position:absolute;
   inset:0;
   pointer-events:none;
 }
-
-/* columns */
 .columns{
   position: relative;
   display:flex;
   gap: 38px;
   align-items:flex-start;
 }
-
 .round{
   width: 320px;
   position: relative;
 }
-
 .round-header{
   background: var(--panel);
   border: 1px solid var(--stroke);
@@ -193,7 +168,6 @@ body{
 }
 
 /* ===== Match cards ===== */
-
 .match{
   width: 280px;
   border: 2px solid #8f8f8f;
@@ -203,6 +177,7 @@ body{
   position:absolute;
 }
 
+/* Clickable rows */
 .teamrow{
   display:grid;
   grid-template-columns: 34px 1fr 48px;
@@ -210,6 +185,12 @@ body{
   height: 34px;
   border-bottom: 1px solid rgba(0,0,0,0.35);
   background: rgba(255,255,255,0.08);
+  cursor: pointer;
+  user-select:none;
+}
+
+.teamrow:hover{
+  filter: brightness(1.08);
 }
 
 .teamrow:last-child{ border-bottom: none; }
@@ -243,39 +224,26 @@ body{
   border-left: 1px solid rgba(0,0,0,0.35);
 }
 
+/* Winner highlight from sheet */
 .teamrow.win{
   background: linear-gradient(90deg, var(--win), rgba(255,255,255,0.12));
   color: #0b0b0b;
 }
-
 .teamrow.win .scoreBox{
   background: rgba(255,255,255,0.35);
   color: #0b0b0b;
 }
 
-.picks{
-  display:flex;
-  gap: 10px;
-  padding: 8px 10px;
-  border-top: 1px solid rgba(0,0,0,0.35);
-  background: rgba(0,0,0,0.12);
+/* User pick highlight (client-side) */
+.teamrow.picked{
+  outline: 2px solid var(--pickGlow);
+  background: linear-gradient(90deg, var(--pick), rgba(255,255,255,0.08));
 }
 
-.picks label{
-  font-size: 12px;
-  font-weight: 800;
-  opacity: .95;
-  display:flex;
-  align-items:center;
-  gap: 6px;
-  cursor:pointer;
-  user-select:none;
-}
-
-.picks input{ cursor:pointer; }
+/* Remove the picks area entirely */
+.picks{ display:none; }
 
 /* ===== Leaderboard ===== */
-
 .side{
   border-radius: 12px;
   padding: 14px;
@@ -283,13 +251,11 @@ body{
   height: 520px;
   overflow: auto;
 }
-
 .side h2{
   margin: 0 0 10px;
   font-size: 16px;
   font-weight: 900;
 }
-
 .leaderboard{
   list-style:none;
   padding:0;
@@ -298,7 +264,6 @@ body{
   flex-direction: column;
   gap: 8px;
 }
-
 .lb-row{
   display:flex;
   justify-content: space-between;
@@ -308,6 +273,5 @@ body{
   border-radius: 10px;
   padding: 10px 12px;
 }
-
 .lb-user{ font-weight: 900; }
 .lb-points{ opacity: .85; font-weight: 800; }
