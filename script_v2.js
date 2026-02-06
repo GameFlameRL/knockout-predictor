@@ -135,8 +135,7 @@ function buildDestSources(nextMap) {
   return destSources;
 }
 
-// Auto side assignment: for each round, first half of matches is LEFT, second half is RIGHT.
-// Final is CENTER.
+// Auto side assignment: first half of matches in a round is LEFT, second half is RIGHT. Final is CENTER.
 function buildSideMap(groups, rounds) {
   const sideById = new Map(); // MatchID -> "L"|"R"|"C"
   rounds.forEach(r => {
@@ -144,15 +143,12 @@ function buildSideMap(groups, rounds) {
     if (!list.length) return;
 
     if (r.toLowerCase() === "final") {
-      // Final match(es) center
       list.forEach(m => sideById.set(safe(m.MatchID), "C"));
       return;
     }
 
     const half = Math.ceil(list.length / 2);
-    list.forEach((m, idx) => {
-      sideById.set(safe(m.MatchID), idx < half ? "L" : "R");
-    });
+    list.forEach((m, idx) => sideById.set(safe(m.MatchID), idx < half ? "L" : "R"));
   });
   return sideById;
 }
@@ -160,15 +156,11 @@ function buildSideMap(groups, rounds) {
 // Predicted entrants propagate forward based on picks + mapping
 function computePredictedTeams(nextMap) {
   const predicted = new Map();
-
   matches.forEach(m => {
-    predicted.set(safe(m.MatchID), {
-      teamA: safe(m.TeamA),
-      teamB: safe(m.TeamB)
-    });
+    predicted.set(safe(m.MatchID), { teamA: safe(m.TeamA), teamB: safe(m.TeamB) });
   });
 
-  for (let pass = 0; pass < 6; pass++) {
+  for (let pass = 0; pass < 7; pass++) {
     matches.forEach(m => {
       const fromId = safe(m.MatchID);
       const link = nextMap.get(fromId);
@@ -177,12 +169,10 @@ function computePredictedTeams(nextMap) {
       const fromTeams = predicted.get(fromId) || { teamA: safe(m.TeamA), teamB: safe(m.TeamB) };
       const pick = safe(picksByMatch.get(fromId));
       if (!pick) return;
-
       if (pick !== fromTeams.teamA && pick !== fromTeams.teamB) return;
 
       const destId = safe(link.nextMatchId);
       const slot = link.nextSlot;
-
       const destCurrent = predicted.get(destId) || { teamA: "", teamB: "" };
 
       if (slot === "A") {
@@ -197,7 +187,7 @@ function computePredictedTeams(nextMap) {
 }
 
 // ======================================
-// BRACKET RENDER (LEFT + CENTER + RIGHT)
+// BRACKET RENDER (triangle into triangle)
 // ======================================
 function renderBracket() {
   const columnsEl = document.getElementById("columns");
@@ -207,7 +197,6 @@ function renderBracket() {
 
   columnsEl.innerHTML = "";
   svg.innerHTML = "";
-
   if (!matches.length) return;
 
   const groups = groupByRound(matches);
@@ -217,21 +206,16 @@ function renderBracket() {
   const predictedTeams = computePredictedTeams(nextMap);
   const sideById = buildSideMap(groups, rounds);
 
-  // Build 3 panes inside #columns (no HTML changes needed)
+  // panes
   columnsEl.style.display = "flex";
   columnsEl.style.alignItems = "flex-start";
   columnsEl.style.justifyContent = "space-between";
-  columnsEl.style.gap = "20px";
+  columnsEl.style.gap = "24px";
 
   const leftPane = document.createElement("div");
   const centerPane = document.createElement("div");
   const rightPane = document.createElement("div");
 
-  leftPane.id = "leftPane";
-  centerPane.id = "centerPane";
-  rightPane.id = "rightPane";
-
-  // panes styling
   [leftPane, centerPane, rightPane].forEach(p => {
     p.style.display = "flex";
     p.style.flexDirection = "row";
@@ -239,77 +223,61 @@ function renderBracket() {
     p.style.gap = "12px";
   });
 
-  leftPane.style.flex = "1 1 auto";
+  leftPane.style.flex = "1 1 0";
   centerPane.style.flex = "0 0 auto";
-  rightPane.style.flex = "1 1 auto";
+  rightPane.style.flex = "1 1 0";
   rightPane.style.justifyContent = "flex-end";
 
   columnsEl.appendChild(leftPane);
   columnsEl.appendChild(centerPane);
   columnsEl.appendChild(rightPane);
 
-  const matchCardById = new Map(); // MatchID -> card element
+  const matchCardById = new Map();
 
-  // Decide which rounds go on sides vs center
   const finalRoundName = rounds.find(r => r.toLowerCase() === "final") || "Final";
   const sideRounds = rounds.filter(r => r !== finalRoundName);
 
-  // Left side: normal order (outer -> inner)
+  // Left: outer -> inner (toward center)
   sideRounds.forEach(roundName => {
-    const roundEl = buildRoundColumn(roundName, groups, predictedTeams, matchCardById);
-    // Filter to LEFT matches only (plus show placeholders if you want, but we keep real matches)
-    filterRoundCardsBySide(roundEl, sideById, "L");
-    leftPane.appendChild(roundEl);
+    const col = buildRoundColumn(roundName, groups, predictedTeams, matchCardById);
+    filterRoundCardsBySide(col, sideById, "L");
+    leftPane.appendChild(col);
   });
 
   // Center: Final only
   const finalCol = buildRoundColumn(finalRoundName, groups, predictedTeams, matchCardById);
-  // keep center matches (C)
   filterRoundCardsBySide(finalCol, sideById, "C");
   centerPane.appendChild(finalCol);
 
-  // Right side: reverse order so earliest round is far right
+  // Right: inner -> outer would look wrong, we want outer -> inner but mirrored.
+  // So we still append columns in REVERSE order (outer far right, inner near center).
   [...sideRounds].reverse().forEach(roundName => {
-    const roundEl = buildRoundColumn(roundName, groups, predictedTeams, matchCardById);
-    filterRoundCardsBySide(roundEl, sideById, "R");
-    rightPane.appendChild(roundEl);
+    const col = buildRoundColumn(roundName, groups, predictedTeams, matchCardById);
+    filterRoundCardsBySide(col, sideById, "R");
+    rightPane.appendChild(col);
   });
 
-  // Need card height for y positioning
+  // measure card height
   const anyCard = columnsEl.querySelector(".match");
   const cardH = anyCard ? anyCard.offsetHeight : 92;
 
-  // Triangular Y positions computed per side, plus final centered between semis
+  // Compute triangular y centers per side, then final centered between semis
   const yCenterById = new Map();
 
-  // Base round = earliest in your list (usually R32)
+  // Base round = earliest side round (usually R32)
   const baseRoundName = sideRounds[0] || rounds[0];
-  const baseList = (groups[baseRoundName] || []).slice();
+  const baseList = (groups[baseRoundName] || []);
 
-  // Place base round matches stacked separately for LEFT and RIGHT
   const baseLeft = baseList.filter(m => sideById.get(safe(m.MatchID)) === "L");
   const baseRight = baseList.filter(m => sideById.get(safe(m.MatchID)) === "R");
 
-  baseLeft.forEach((m, i) => {
-    const mid = safe(m.MatchID);
-    const yCenter = HEADER_H + TOP_PAD + (cardH / 2) + i * BASE_STEP;
-    yCenterById.set(mid, yCenter);
-  });
+  baseLeft.forEach((m, i) => yCenterById.set(safe(m.MatchID), HEADER_H + TOP_PAD + cardH / 2 + i * BASE_STEP));
+  baseRight.forEach((m, i) => yCenterById.set(safe(m.MatchID), HEADER_H + TOP_PAD + cardH / 2 + i * BASE_STEP));
 
-  baseRight.forEach((m, i) => {
-    const mid = safe(m.MatchID);
-    const yCenter = HEADER_H + TOP_PAD + (cardH / 2) + i * BASE_STEP;
-    yCenterById.set(mid, yCenter);
-  });
-
-  // For each later non-final round, center between its feeder matches (A + B) when possible
-  // Do it in forward round order (sideRounds)
+  // Later rounds: center between feeders, separately for L and R
   for (let rIdx = 1; rIdx < sideRounds.length; rIdx++) {
     const roundName = sideRounds[rIdx];
     const list = groups[roundName] || [];
-    if (!list.length) continue;
-
-    // Left and Right separately
     ["L", "R"].forEach(side => {
       const sideList = list.filter(m => sideById.get(safe(m.MatchID)) === side);
       let fallbackIndex = 0;
@@ -324,21 +292,17 @@ function renderBracket() {
         const yB = bSrc ? yCenterById.get(bSrc) : null;
 
         let yCenter;
-        if (typeof yA === "number" && typeof yB === "number") {
-          yCenter = (yA + yB) / 2;
-        } else {
-          yCenter = HEADER_H + TOP_PAD + (cardH / 2) + fallbackIndex * Math.max(BASE_STEP, cardH + MIN_GAP);
-          fallbackIndex++;
-        }
+        if (typeof yA === "number" && typeof yB === "number") yCenter = (yA + yB) / 2;
+        else yCenter = HEADER_H + TOP_PAD + cardH / 2 + fallbackIndex++ * Math.max(BASE_STEP, cardH + MIN_GAP);
 
         yCenterById.set(mid, yCenter);
       });
     });
   }
 
-  // Final: center between its two feeder semis (usually one L semi and one R semi)
-  const finalList = groups[finalRoundName] || [];
-  finalList.forEach(m => {
+  // Final: center between its two feeder semis
+  const finals = groups[finalRoundName] || [];
+  finals.forEach(m => {
     const mid = safe(m.MatchID);
     const feeders = destSources.get(mid) || {};
     const aSrc = feeders.A ? safe(feeders.A) : "";
@@ -347,35 +311,27 @@ function renderBracket() {
     const yA = aSrc ? yCenterById.get(aSrc) : null;
     const yB = bSrc ? yCenterById.get(bSrc) : null;
 
-    if (typeof yA === "number" && typeof yB === "number") {
-      yCenterById.set(mid, (yA + yB) / 2);
-    } else if (typeof yA === "number") {
-      yCenterById.set(mid, yA);
-    } else if (typeof yB === "number") {
-      yCenterById.set(mid, yB);
-    } else {
-      yCenterById.set(mid, HEADER_H + TOP_PAD + (cardH / 2));
-    }
+    if (typeof yA === "number" && typeof yB === "number") yCenterById.set(mid, (yA + yB) / 2);
+    else if (typeof yA === "number") yCenterById.set(mid, yA);
+    else if (typeof yB === "number") yCenterById.set(mid, yB);
+    else yCenterById.set(mid, HEADER_H + TOP_PAD + cardH / 2);
   });
 
-  // Apply Y positions to cards inside each round column
+  // Apply positions
   columnsEl.querySelectorAll(".round").forEach(roundEl => {
     let maxBottom = HEADER_H + TOP_PAD;
-
     const cards = [...roundEl.querySelectorAll(".match")];
     let fallbackIndex = 0;
 
     cards.forEach(card => {
       const mid = safe(card.dataset.matchId);
-      const yCenter = yCenterById.get(mid) ?? (HEADER_H + TOP_PAD + cardH / 2 + fallbackIndex * BASE_STEP);
-      fallbackIndex++;
-
+      const yCenter = yCenterById.get(mid) ?? (HEADER_H + TOP_PAD + cardH / 2 + fallbackIndex++ * BASE_STEP);
       const top = Math.max(HEADER_H + TOP_PAD, yCenter - cardH / 2);
+
       card.style.left = `${(COL_WIDTH - CARD_WIDTH) / 2}px`;
       card.style.top = `${top}px`;
 
-      const bottom = top + cardH;
-      if (bottom > maxBottom) maxBottom = bottom;
+      maxBottom = Math.max(maxBottom, top + cardH);
     });
 
     roundEl.style.minHeight = `${maxBottom + 30}px`;
@@ -390,16 +346,16 @@ function renderBracket() {
   svg.setAttribute("width", contentW);
   svg.setAttribute("height", contentH);
 
-  // Draw mapped connectors to the correct slot row
+  // Draw mapped connectors with direction-aware edges (fixes right side spaghetti)
   nextMap.forEach((link, fromId) => {
     const fromCard = matchCardById.get(fromId);
     const toCard = matchCardById.get(safe(link.nextMatchId));
     if (!fromCard || !toCard) return;
-    drawMappedConnector(svg, wrap, fromCard, toCard, link.nextSlot);
+    drawMappedConnectorDirectional(svg, wrap, fromCard, toCard, link.nextSlot);
   });
 }
 
-// Build one round column with cards (unfiltered)
+// Build a round column (unfiltered)
 function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
   const roundEl = document.createElement("div");
   roundEl.className = "round";
@@ -455,7 +411,6 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
       </div>
     `;
 
-    // click-to-pick
     card.querySelectorAll(".teamrow").forEach(row => {
       row.addEventListener("click", () => {
         const mid = safe(row.getAttribute("data-match"));
@@ -477,25 +432,20 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
   return roundEl;
 }
 
-// Remove cards not belonging to a given side; if a round becomes empty, we keep the header but it won't show matches.
 function filterRoundCardsBySide(roundEl, sideById, wantedSide) {
-  const cards = [...roundEl.querySelectorAll(".match")];
-  cards.forEach(card => {
+  [...roundEl.querySelectorAll(".match")].forEach(card => {
     const mid = safe(card.dataset.matchId);
     const side = sideById.get(mid) || "L";
     if (side !== wantedSide) card.remove();
   });
 }
 
-// Draw from card right-middle -> destination slot (A top row / B bottom row)
-function drawMappedConnector(svg, wrap, fromCard, toCard, toSlot) {
+// ✅ FIX: draw connectors correctly for BOTH directions (left->right and right->left)
+function drawMappedConnectorDirectional(svg, wrap, fromCard, toCard, toSlot) {
   const scale = currentScale || 1;
 
   const w = wrap.getBoundingClientRect();
   const rf = fromCard.getBoundingClientRect();
-
-  const sx = (rf.right - w.left) / scale;
-  const sy = (rf.top - w.top + rf.height / 2) / scale;
 
   const targetRow =
     toSlot === "A"
@@ -503,10 +453,22 @@ function drawMappedConnector(svg, wrap, fromCard, toCard, toSlot) {
       : toCard.querySelector('.teamrow[data-slot="B"]');
 
   const rr = targetRow ? targetRow.getBoundingClientRect() : toCard.getBoundingClientRect();
-  const tx = (rr.left - w.left) / scale;
+
+  // Determine direction by comparing card centers
+  const fromCX = (rf.left + rf.right) / 2;
+  const toCX = (rr.left + rr.right) / 2;
+  const goingRight = toCX >= fromCX;
+
+  // Source edge and destination edge based on direction
+  const sx = (goingRight ? (rf.right - w.left) : (rf.left - w.left)) / scale;
+  const sy = (rf.top - w.top + rf.height / 2) / scale;
+
+  const tx = (goingRight ? (rr.left - w.left) : (rr.right - w.left)) / scale;
   const ty = (rr.top - w.top + rr.height / 2) / scale;
 
-  const midX = sx + 30;
+  // Elbow: push a bit outward in the direction of travel
+  const elbow = 30;
+  const midX = goingRight ? (sx + elbow) : (sx - elbow);
 
   const paths = [
     `M ${sx} ${sy} L ${midX} ${sy}`,
