@@ -6,6 +6,8 @@ const SCRIPT_URL =
   "https://script.google.com/macros/s/AKfycbywemgGWVB87gFdGZGax7mbJ8U6cIoVxI0pYBJMz-Da66SR_qhknP2ogOISs1WtbGjbbg/exec";
 
 // ======================================
+// IMPORTANT: NO ?t= CACHE-BUSTER ON OPENSHEET (it causes HTTP 400)
+// You can optionally add ?raw=true if you want raw values.
 const MATCHES_URL = `https://opensheet.elk.sh/${SHEET_ID}/Matches`;
 const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
@@ -56,7 +58,8 @@ function loadAll() {
 }
 
 function loadMatches() {
-  const url = `${MATCHES_URL}?t=${Date.now()}`;
+  // NO ?t= here
+  const url = MATCHES_URL;
 
   debugWrite(
     `BUILD: ${BUILD_STAMP}\n` +
@@ -95,7 +98,8 @@ function loadMatches() {
 }
 
 function loadLeaderboard() {
-  const url = `${LEADERBOARD_URL}?t=${Date.now()}`;
+  // NO ?t= here
+  const url = LEADERBOARD_URL;
 
   return fetch(url)
     .then(r => r.json())
