@@ -1,803 +1,755 @@
 /* =========================
-   Knockout Predictor script.js
-   Graph-based bracket layout:
-   - Keeps your sheet EXACTLY as typed
-   - Places matches by their actual links (NextMatchID/NextSlot)
-   - Forms left triangle + right triangle into Final
+   Knockout Predictor (Graph Renderer)
+   - Reads Matches from OpenSheet
+   - Uses MatchID -> NextMatchID/NextSlot wiring
+   - Uses Side (L/R) + SeedY to anchor layout
+   - Computes triangle positions + draws correct lines
+   - Click team names to pick; picks auto-advance
    ========================= */
 
-/* ====== CONFIG ====== */
-const SHEET_ID = "1ilDa0ZleooN3OBruvtOqF9Ym1CitowFjaLCk1GiYiNc";
-const MATCHES_TAB_NAME = "Matches";
-const LEADERBOARD_TAB_NAME = "Leaderboard";
+(() => {
+  // ====== CONFIG (EDIT THESE) ======
+  const SHEET_ID = "1ilDa0ZleooN3OBruvtOqF9Ym1CitowFjaLCk1GiYiNc";
+  const MATCHES_TAB = "Matches";
+  const LEADERBOARD_TAB = "Leaderboard"; // optional; safe if empty
+  const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbywemgGWVB87gFdGZGax7mbJ8U6cIoVxI0pYBJMz-Da66SR_qhknP2ogOISs1WtbGjbbg/exec"; // your deployed Apps Script
 
-// OpenSheet endpoint (you’re already using this)
-const MATCHES_URL = `https://opensheet.elk.sh/${SHEET_ID}/${encodeURIComponent(MATCHES_TAB_NAME)}`;
-const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/${encodeURIComponent(LEADERBOARD_TAB_NAME)}`;
+  // Layout tuning
+  const COL_W = 360;        // column width (matches your CSS .round width)
+  const COL_GAP = 28;       // gap between columns
+  const CENTER_GAP = 70;    // space between left triangle and right triangle (Final sits here)
+  const MATCH_H = 88;       // 2 rows * 44px (matches your CSS teamrow height)
+  const V_GAP = 16;         // vertical gap between matches
+  const TOP_PAD = 8;
 
-// Your Apps Script Web App (submit predictions / sync bracket)
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbywemgGWVB87gFdGZGax7mbJ8U6cIoVxI0pYBJMz-Da66SR_qhknP2ogOISs1WtbGjbbg/exec";
-
-/* ====== UI / LAYOUT SETTINGS ====== */
-const ROUNDS_ORDER = ["Play-In", "R16", "Quarter", "Semi", "Final"];
-
-const CARD_W = 320;
-const ROW_H = 44;
-const CARD_H = ROW_H * 2;        // 2 team rows
-const ROUND_GAP_X = 28;
-const MIN_GAP_Y = 16;
-
-const TOP_PAD = 20;
-const LEFT_PAD = 20;
-
-const FINAL_GAP_X = 60;          // space around center final
-const SIDE_INSET = 10;
-
-const ZOOM_MIN = 0.5;
-const ZOOM_MAX = 1.6;
-
-/* ====== STATE ====== */
-let zoom = 1.0;
-
-let matches = [];                // normalized match objects
-let matchById = new Map();       // id -> match
-let incoming = new Map();        // id -> [{fromId, slot}]
-let sideOf = new Map();          // id -> "L" | "R" | "C"
-let picks = new Map();           // id -> winnerTeamName
-
-/* ====== DOM ====== */
-const el = {
-  stage: null,
-  viewport: null,
-  wrap: null,
-  lines: null,
-  columns: null,
-  nameInput: null,
-  btnSubmit: null,
-  btnRefresh: null,
-  btnSync: null,
-  btnZoomIn: null,
-  btnZoomOut: null,
-  btnFit: null,
-  leaderboard: null,
-};
-
-/* =========================
-   BOOT
-   ========================= */
-document.addEventListener("DOMContentLoaded", () => {
-  bindDom();
-  bindButtons();
-  refreshAll();
-});
-
-function bindDom() {
-  // Expecting your HTML already has these ids (from your current app)
-  el.stage = document.querySelector(".stage") || document.body;
-  el.viewport = document.querySelector(".bracket-viewport") || el.stage;
-  el.wrap = document.querySelector(".bracket-wrap") || createDiv(el.viewport, "bracket-wrap");
-  el.columns = document.querySelector(".columns") || createDiv(el.wrap, "columns");
-
-  el.lines = document.querySelector("#lines");
-  if (!el.lines) {
-    el.lines = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    el.lines.setAttribute("id", "lines");
-    el.wrap.appendChild(el.lines);
-  }
-
-  el.nameInput = document.querySelector("#username") || document.querySelector('input[placeholder*="name"]');
-  el.btnSubmit = document.querySelector("#submitBtn") || findButton("Submit Predictions");
-  el.btnRefresh = document.querySelector("#refreshBtn") || findButton("Refresh");
-  el.btnSync = document.querySelector("#syncBtn") || findButton("Sync Bracket");
-
-  el.btnZoomOut = document.querySelector("#zoomOut") || findButton("-");
-  el.btnFit = document.querySelector("#zoomFit") || findButton("Fit");
-  el.btnZoomIn = document.querySelector("#zoomIn") || findButton("+");
-
-  el.leaderboard = document.querySelector("#leaderboardList") || document.querySelector(".leaderboard");
-}
-
-function bindButtons() {
-  if (el.btnRefresh) el.btnRefresh.addEventListener("click", () => refreshAll(true));
-  if (el.btnFit) el.btnFit.addEventListener("click", () => fitToStage());
-  if (el.btnZoomIn) el.btnZoomIn.addEventListener("click", () => setZoom(zoom + 0.1));
-  if (el.btnZoomOut) el.btnZoomOut.addEventListener("click", () => setZoom(zoom - 0.1));
-
-  if (el.btnSubmit) el.btnSubmit.addEventListener("click", submitPredictions);
-  if (el.btnSync) el.btnSync.addEventListener("click", syncBracket);
-}
-
-/* =========================
-   DATA LOAD
-   ========================= */
-async function refreshAll(force = false) {
-  await loadMatches();
-  buildGraph();
-  classifySides();
-  applyExistingWinnersFromSheet();
-  renderBracket();
-  drawLines();
-  loadLeaderboard().catch(() => {});
-}
-
-async function loadMatches() {
-  const url = `${MATCHES_URL}?t=${Date.now()}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Matches fetch failed: ${res.status}`);
-  const data = await res.json();
-
-  matches = (Array.isArray(data) ? data : []).map(normalizeMatch).filter(m => m.id != null);
-
-  matchById = new Map(matches.map(m => [m.id, m]));
-}
-
-function normalizeMatch(row) {
-  // Defensive: OpenSheet keys may vary by capitalization
-  const get = (k) => row[k] ?? row[k.toLowerCase()] ?? row[k.toUpperCase()] ?? "";
-
-  const idRaw = get("MatchID");
-  const id = parseInt(String(idRaw).trim(), 10);
-  if (!Number.isFinite(id)) return { id: null };
-
-  const round = String(get("Round")).trim();
-
-  const teamA = cleanTeam(get("TeamA"));
-  const teamB = cleanTeam(get("TeamB"));
-  const winner = cleanTeam(get("Winner"));
-
-  const nextIdRaw = get("NextMatchID");
-  const nextMatchId = nextIdRaw === "" ? null : parseInt(String(nextIdRaw).trim(), 10);
-  const nextSlot = String(get("NextSlot")).trim().toUpperCase() || null;
-
-  return {
-    id,
-    round,
-    teamA,
-    teamB,
-    winner,
-    nextMatchId: Number.isFinite(nextMatchId) ? nextMatchId : null,
-    nextSlot: (nextSlot === "A" || nextSlot === "B") ? nextSlot : null,
-
-    // layout fields
-    x: 0,
-    y: 0,
-    side: "C", // L/R/C
+  // Round labels are just cosmetic now (renderer does NOT depend on them)
+  const ROUND_LABELS = {
+    "Play-In": "Play-In",
+    "R16": "R16",
+    "Quarter": "Quarter",
+    "Semi": "Semi",
+    "Final": "Final"
   };
-}
 
-function cleanTeam(v) {
-  const s = String(v ?? "").trim();
-  if (!s) return "";
-  if (s.toUpperCase() === "TBD") return "";
-  if (s.toUpperCase() === "BYE") return ""; // we never treat BYE as a team
-  return s;
-}
+  // ====== DOM HOOKS (change only if your index.html differs) ======
+  const els = {
+    username: document.querySelector('#username') || document.querySelector('input[placeholder*="name"]'),
+    submitBtn: document.querySelector('#submitBtn') || findBtnByText("Submit Predictions"),
+    refreshBtn: document.querySelector('#refreshBtn') || findBtnByText("Refresh"),
+    syncBtn: document.querySelector('#syncBtn') || findBtnByText("Sync Bracket"),
+    zoomOut: findBtnByText("-"),
+    zoomFit: findBtnByText("Fit"),
+    zoomIn: findBtnByText("+"),
 
-/* =========================
-   GRAPH
-   ========================= */
-function buildGraph() {
-  incoming = new Map();
-  for (const m of matches) {
-    if (m.nextMatchId && m.nextSlot) {
-      if (!incoming.has(m.nextMatchId)) incoming.set(m.nextMatchId, []);
-      incoming.get(m.nextMatchId).push({ fromId: m.id, slot: m.nextSlot });
+    stage: document.querySelector('.stage'),
+    viewport: document.querySelector('.bracket-viewport'),
+    wrap: document.querySelector('.bracket-wrap'),
+    columns: document.querySelector('.columns'),
+    lines: document.querySelector('#lines'),
+
+    leaderboardList: document.querySelector('#leaderboardList') || document.querySelector('.leaderboard')
+  };
+
+  // Create SVG if missing
+  if (!els.lines && els.wrap) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("id", "lines");
+    svg.style.position = "absolute";
+    svg.style.inset = "0";
+    svg.style.pointerEvents = "none";
+    els.wrap.appendChild(svg);
+    els.lines = svg;
+  }
+
+  // Safety
+  if (!els.wrap || !els.columns) {
+    console.warn("Missing bracket DOM containers. Ensure .bracket-wrap and .columns exist in index.html.");
+  }
+
+  // ====== STATE ======
+  const state = {
+    zoom: 1,
+    matches: [],
+    nodes: new Map(),         // id -> node
+    incoming: new Map(),      // id -> array of feeder ids
+    outgoing: new Map(),      // id -> { nextId, slot }
+    picks: new Map(),         // id -> pickedTeamName
+    finalId: null,
+    leftMaxDepth: 0,
+    rightMaxDepth: 0,
+  };
+
+  // ====== URLS ======
+  const MATCHES_URL = `https://opensheet.elk.sh/${SHEET_ID}/${encodeURIComponent(MATCHES_TAB)}`;
+  const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/${encodeURIComponent(LEADERBOARD_TAB)}`;
+
+  // ====== INIT ======
+  wireButtons();
+  refreshAll();
+
+  // =========================
+  // UI WIRING
+  // =========================
+  function wireButtons() {
+    if (els.refreshBtn) els.refreshBtn.addEventListener("click", () => refreshAll());
+
+    if (els.zoomOut) els.zoomOut.addEventListener("click", () => setZoom(state.zoom * 0.9));
+    if (els.zoomIn) els.zoomIn.addEventListener("click", () => setZoom(state.zoom * 1.1));
+    if (els.zoomFit) els.zoomFit.addEventListener("click", () => fitZoom());
+
+    if (els.submitBtn) els.submitBtn.addEventListener("click", async () => {
+      const username = (els.username?.value || "").trim();
+      if (!username) return alert("Enter your name first.");
+      const payload = buildSubmissionPayload(username);
+      if (!payload.picks.length) return alert("Make at least 1 pick.");
+
+      // Submit to Apps Script (optional)
+      if (!SCRIPT_URL) return alert("SCRIPT_URL not set.");
+      try {
+        els.submitBtn.disabled = true;
+        const res = await fetch(SCRIPT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ action: "submitPicks", ...payload })
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+        alert("Submitted ✅");
+        await loadLeaderboard();
+      } catch (e) {
+        console.error(e);
+        alert("Submit failed: " + (e?.message || e));
+      } finally {
+        els.submitBtn.disabled = false;
+      }
+    });
+
+    if (els.syncBtn) els.syncBtn.addEventListener("click", async () => {
+      // Optional: sync winners forward in sheet based on Winner column.
+      // Your earlier build used Apps Script for this. Keep it if you want.
+      if (!SCRIPT_URL) return alert("SCRIPT_URL not set.");
+      try {
+        els.syncBtn.disabled = true;
+        const res = await fetch(SCRIPT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ action: "syncBracket" })
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+        alert("Synced ✅");
+        await refreshAll();
+      } catch (e) {
+        console.error(e);
+        alert("Sync failed: " + (e?.message || e));
+      } finally {
+        els.syncBtn.disabled = false;
+      }
+    });
+  }
+
+  function setZoom(z) {
+    state.zoom = clamp(z, 0.45, 2.4);
+    if (els.wrap) els.wrap.style.transform = `scale(${state.zoom})`;
+  }
+
+  function fitZoom() {
+    if (!els.stage || !els.wrap) return;
+    // Fit to stage width
+    const stageW = els.stage.clientWidth - 24;
+    const contentW = els.wrap.scrollWidth || els.wrap.getBoundingClientRect().width || 1200;
+    const z = stageW / contentW;
+    setZoom(z);
+  }
+
+  // =========================
+  // DATA LOAD
+  // =========================
+  async function refreshAll() {
+    await loadMatches();
+    buildGraph();
+    renderGraphBracket();
+    drawAllLines();
+    await loadLeaderboard();
+    fitZoom();
+  }
+
+  async function loadMatches() {
+    const res = await fetch(`${MATCHES_URL}?t=${Date.now()}`);
+    if (!res.ok) throw new Error(`Matches fetch failed: HTTP ${res.status}`);
+    const rows = await res.json();
+
+    // Normalize + parse numbers
+    state.matches = rows
+      .map(r => ({
+        MatchID: toInt(r.MatchID),
+        Round: (r.Round || "").trim(),
+        TeamA: cleanTeam(r.TeamA),
+        TeamB: cleanTeam(r.TeamB),
+        Winner: cleanTeam(r.Winner),
+        NextMatchID: toInt(r.NextMatchID),
+        NextSlot: (r.NextSlot || "").trim().toUpperCase(),
+        Side: (r.Side || "").trim().toUpperCase(),
+        SeedY: toInt(r.SeedY),
+      }))
+      .filter(r => Number.isFinite(r.MatchID)); // must have IDs
+
+    // Find Final
+    // Prefer Round == Final, else "no NextMatchID"
+    const finalRow = state.matches.find(m => m.Round.toLowerCase() === "final") ||
+                     state.matches.find(m => !m.NextMatchID);
+    state.finalId = finalRow?.MatchID || null;
+
+    // Clear old picks if they are for matches no longer present
+    const ids = new Set(state.matches.map(m => m.MatchID));
+    for (const k of [...state.picks.keys()]) if (!ids.has(k)) state.picks.delete(k);
+  }
+
+  async function loadLeaderboard() {
+    if (!els.leaderboardList) return;
+    // Leaderboard optional: handle missing tab or empty gracefully
+    try {
+      const res = await fetch(`${LEADERBOARD_URL}?t=${Date.now()}`);
+      if (!res.ok) throw new Error("No leaderboard");
+      const rows = await res.json();
+      renderLeaderboard(rows);
+    } catch {
+      renderLeaderboard([]);
     }
   }
-}
 
-function findFinalMatchId() {
-  // Prefer Round == Final, else match with no nextMatchId
-  const final = matches.find(m => m.round === "Final") || matches.find(m => !m.nextMatchId);
-  return final ? final.id : null;
-}
+  // =========================
+  // GRAPH BUILD
+  // =========================
+  function buildGraph() {
+    state.nodes = new Map();
+    state.incoming = new Map();
+    state.outgoing = new Map();
 
-/* =========================
-   SIDE CLASSIFICATION (L/R)
-   - determines left triangle and right triangle
-   based on which Semi feeds Final slot A vs B
-   ========================= */
-function classifySides() {
-  sideOf = new Map();
-
-  const finalId = findFinalMatchId();
-  if (!finalId) return;
-
-  const finalsIncoming = incoming.get(finalId) || [];
-
-  const aFeeder = finalsIncoming.find(x => x.slot === "A");
-  const bFeeder = finalsIncoming.find(x => x.slot === "B");
-
-  // If missing, fall back to split by round order (best-effort)
-  const leftRoot = aFeeder ? aFeeder.fromId : null;
-  const rightRoot = bFeeder ? bFeeder.fromId : null;
-
-  // Mark center
-  sideOf.set(finalId, "C");
-
-  if (leftRoot) markSubtree(leftRoot, "L");
-  if (rightRoot) markSubtree(rightRoot, "R");
-
-  // Any unclassified earlier matches: assign by which root they eventually reach
-  // (walk forward via nextMatchId until final)
-  for (const m of matches) {
-    if (sideOf.has(m.id)) continue;
-    const end = walkToFinal(m.id, finalId);
-    if (end === "L" || end === "R") sideOf.set(m.id, end);
-  }
-
-  // Apply to objects
-  for (const m of matches) {
-    m.side = sideOf.get(m.id) || (m.id === finalId ? "C" : "L");
-  }
-}
-
-function markSubtree(rootId, side) {
-  const stack = [rootId];
-  while (stack.length) {
-    const id = stack.pop();
-    if (sideOf.has(id)) continue;
-    sideOf.set(id, side);
-    const feeders = incoming.get(id) || [];
-    for (const f of feeders) stack.push(f.fromId);
-  }
-}
-
-function walkToFinal(startId, finalId) {
-  let cur = matchById.get(startId);
-  const seen = new Set();
-  while (cur && cur.nextMatchId && !seen.has(cur.id)) {
-    seen.add(cur.id);
-    if (cur.nextMatchId === finalId) {
-      // determine slot at final
-      const finalsIncoming = incoming.get(finalId) || [];
-      const edge = finalsIncoming.find(x => x.fromId === cur.id);
-      if (!edge) return null;
-      return edge.slot === "A" ? "L" : "R";
+    for (const m of state.matches) {
+      state.nodes.set(m.MatchID, { ...m });
+      state.incoming.set(m.MatchID, []);
     }
-    cur = matchById.get(cur.nextMatchId);
-  }
-  return null;
-}
 
-/* =========================
-   EXISTING WINNERS (from sheet)
-   ========================= */
-function applyExistingWinnersFromSheet() {
-  picks.clear();
-
-  // Use sheet Winner column as initial picks where present
-  for (const m of matches) {
-    if (m.winner) {
-      picks.set(m.id, m.winner);
+    for (const m of state.matches) {
+      if (m.NextMatchID && state.nodes.has(m.NextMatchID)) {
+        state.outgoing.set(m.MatchID, { nextId: m.NextMatchID, slot: m.NextSlot });
+        state.incoming.get(m.NextMatchID).push(m.MatchID);
+      }
     }
   }
 
-  // Now propagate winners forward into downstream Team slots (graph fill)
-  // This keeps your data consistent in UI even if the sheet already has some winners.
-  propagateAllPicks();
-}
+  // =========================
+  // LAYOUT (Triangle into Triangle)
+  // =========================
+  function renderGraphBracket() {
+    if (!els.columns) return;
 
-function propagateAllPicks() {
-  // Start by clearing all dynamically-filled downstream slots
-  // We do NOT erase seeded TeamA/TeamB that are explicitly present.
-  const baseTeams = new Map();
-  for (const m of matches) {
-    baseTeams.set(m.id, { teamA: m.teamA, teamB: m.teamB });
+    // Clear
+    els.columns.innerHTML = "";
+    if (els.lines) els.lines.innerHTML = "";
+
+    // Compute depths (distance to Final) using reverse BFS from Final
+    const depth = computeDepthsToFinal(state.finalId);
+
+    // Determine left/right max depth
+    const leftNodes = [...state.nodes.values()].filter(n => (n.Side || "") === "L");
+    const rightNodes = [...state.nodes.values()].filter(n => (n.Side || "") === "R");
+
+    state.leftMaxDepth = maxOf(leftNodes.map(n => depth.get(n.MatchID) ?? 0));
+    state.rightMaxDepth = maxOf(rightNodes.map(n => depth.get(n.MatchID) ?? 0));
+
+    // Build columns order: Left depths (max..1), Final (0), Right depths (1..max)
+    const colSpecs = [];
+
+    for (let d = state.leftMaxDepth; d >= 1; d--) colSpecs.push({ side: "L", depth: d });
+    colSpecs.push({ side: "C", depth: 0 }); // Final column
+    for (let d = 1; d <= state.rightMaxDepth; d++) colSpecs.push({ side: "R", depth: d });
+
+    // Create columns
+    const colEls = [];
+    for (const spec of colSpecs) {
+      const col = document.createElement("div");
+      col.className = "round";
+      col.style.width = COL_W + "px";
+      col.style.position = "relative";
+
+      const header = document.createElement("div");
+      header.className = "round-header";
+      header.textContent = columnLabel(spec, depth);
+      col.appendChild(header);
+
+      els.columns.appendChild(col);
+      colEls.push({ spec, el: col });
+    }
+
+    // Position matches (y) using SeedY anchors + midpoint propagation
+    const yPos = computeYPositions(depth);
+
+    // Render matches into appropriate column
+    for (const { spec, el } of colEls) {
+      const list = [...state.nodes.values()].filter(n => {
+        const d = depth.get(n.MatchID) ?? 999;
+        if (spec.side === "C") return n.MatchID === state.finalId || d === 0;
+        return n.Side === spec.side && d === spec.depth;
+      });
+
+      // Sort by y for stable stacking
+      list.sort((a, b) => (yPos.get(a.MatchID) ?? 0) - (yPos.get(b.MatchID) ?? 0));
+
+      for (const node of list) {
+        const matchEl = renderMatchCard(node);
+        matchEl.style.top = (TOP_PAD + (yPos.get(node.MatchID) ?? 0)) + "px";
+        el.appendChild(matchEl);
+      }
+    }
+
+    // Give bracket-wrap a meaningful width so Fit works
+    if (els.wrap) {
+      const totalCols = colSpecs.length;
+      els.columns.style.gap = COL_GAP + "px";
+      els.wrap.style.padding = "10px 10px 30px";
+      // Allow scrollWidth to reflect content
+    }
   }
 
-  // Reset teams to base
-  for (const m of matches) {
-    const base = baseTeams.get(m.id);
-    m.teamA = base.teamA;
-    m.teamB = base.teamB;
+  function columnLabel(spec, depthMap) {
+    if (spec.side === "C") return "Final";
+    // Use the most common Round name for nodes in that column
+    const nodes = [...state.nodes.values()].filter(n => n.Side === spec.side && (depthMap.get(n.MatchID) ?? -1) === spec.depth);
+    const round = mostCommon(nodes.map(n => n.Round));
+    return ROUND_LABELS[round] || round || (spec.side === "L" ? "Left" : "Right");
   }
 
-  // Apply picks in topological-ish order by round progression
-  // We may have cross-order, so we do multiple passes until stable.
-  for (let pass = 0; pass < 6; pass++) {
-    for (const m of matches) {
-      const win = picks.get(m.id);
-      if (!win) continue;
-      if (m.nextMatchId && m.nextSlot) {
-        const nxt = matchById.get(m.nextMatchId);
-        if (!nxt) continue;
-        if (m.nextSlot === "A") {
-          if (!nxt.teamA || nxt.teamA === win) nxt.teamA = win;
-        } else {
-          if (!nxt.teamB || nxt.teamB === win) nxt.teamB = win;
+  function computeDepthsToFinal(finalId) {
+    const depth = new Map();
+    if (!finalId || !state.nodes.has(finalId)) {
+      // fallback: treat everything as depth 1
+      for (const id of state.nodes.keys()) depth.set(id, 1);
+      return depth;
+    }
+
+    // Reverse BFS outward from Final: depth(final)=0; feeders=1; feeders of feeders=2...
+    depth.set(finalId, 0);
+    const q = [finalId];
+
+    while (q.length) {
+      const cur = q.shift();
+      const curD = depth.get(cur);
+
+      const feeders = state.incoming.get(cur) || [];
+      for (const f of feeders) {
+        if (!depth.has(f)) {
+          depth.set(f, curD + 1);
+          q.push(f);
         }
       }
     }
-  }
-}
 
-/* =========================
-   RENDER
-   ========================= */
-function renderBracket() {
-  el.columns.innerHTML = "";
-  clearSvg(el.lines);
-
-  // Build round columns for BOTH sides:
-  // Left: Play-In -> R16 -> Quarter -> Semi
-  // Center: Final
-  // Right: Semi <- Quarter <- R16 <- Play-In
-  const leftRounds = ["Play-In", "R16", "Quarter", "Semi"];
-  const rightRounds = ["Semi", "Quarter", "R16", "Play-In"];
-
-  const finalId = findFinalMatchId();
-  const finalMatch = finalId ? matchById.get(finalId) : null;
-
-  // Layout both sides first (computes x,y)
-  const leftPlaced = layoutSide("L", leftRounds, true);
-  const rightPlaced = layoutSide("R", rightRounds, false);
-
-  // Place Final centered between sides
-  if (finalMatch) {
-    const leftMost = leftPlaced.bounds;
-    const rightMost = rightPlaced.bounds;
-
-    const centerX = (leftMost.maxX + rightMost.minX) / 2;
-    finalMatch.x = centerX - CARD_W / 2;
-    finalMatch.y = (leftMost.midY + rightMost.midY) / 2 - CARD_H / 2;
+    // Any disconnected nodes: place far left/right with max+1
+    const maxD = maxOf([...depth.values()]);
+    for (const id of state.nodes.keys()) {
+      if (!depth.has(id)) depth.set(id, maxD + 1);
+    }
+    return depth;
   }
 
-  // Now render columns visually in the same order as the layout
-  // Left columns
-  for (const r of leftRounds) {
-    renderRoundColumn(r, "L", true);
-  }
+  function computeYPositions(depthMap) {
+    const y = new Map();
 
-  // Final column
-  if (finalMatch) {
-    const col = createDiv(el.columns, "round");
-    col.style.width = `${CARD_W + 40}px`;
-    const hdr = createDiv(col, "round-header");
-    hdr.textContent = "Final";
-    renderMatchCard(finalMatch, col);
-  }
+    // 1) Anchor nodes with SeedY (per side) at earliest depths first
+    // We want feeders positioned before targets, so sort by depth DESC
+    const nodesByDepthDesc = [...state.nodes.values()].sort((a, b) => (depthMap.get(b.MatchID) ?? 0) - (depthMap.get(a.MatchID) ?? 0));
 
-  // Right columns
-  for (const r of rightRounds) {
-    renderRoundColumn(r, "R", false);
-  }
+    // Determine per-side vertical spacing
+    const spacing = MATCH_H + V_GAP;
 
-  // Resize SVG to cover wrap
-  requestAnimationFrame(() => {
-    fitSvgToContent();
-    drawLines();
-    // If user has never fit, fit once
-    fitToStage(true);
-  });
-}
-
-function renderRoundColumn(roundName, side, isLeftToRight) {
-  const col = createDiv(el.columns, "round");
-  col.style.width = `${CARD_W + 40}px`;
-
-  const hdr = createDiv(col, "round-header");
-  hdr.textContent = roundName;
-
-  const ms = matches
-    .filter(m => m.round === roundName && m.side === side)
-    // sort by y so they appear in correct order within column container
-    .sort((a, b) => a.y - b.y);
-
-  for (const m of ms) {
-    renderMatchCard(m, col);
-  }
-}
-
-function renderMatchCard(m, parent) {
-  const card = createDiv(parent, "match");
-  card.dataset.matchId = String(m.id);
-
-  // Absolute position inside the BRACKET WRAP, not inside column
-  // We’ll position via transform with a wrapper alignment trick:
-  // Set card position absolute relative to .bracket-wrap
-  card.style.position = "absolute";
-  card.style.left = `${m.x}px`;
-  card.style.top = `${m.y}px`;
-  card.style.width = `${CARD_W}px`;
-
-  // Team rows (clickable)
-  const a = buildTeamRow(m, "A");
-  const b = buildTeamRow(m, "B");
-  card.appendChild(a);
-  card.appendChild(b);
-
-  // Attach to wrap instead of parent column so lines map correctly in one coordinate system
-  el.wrap.appendChild(card);
-}
-
-function buildTeamRow(match, slot) {
-  const teamName = slot === "A" ? match.teamA : match.teamB;
-  const row = createDiv(null, "teamrow");
-
-  const abbr = makeAbbr(teamName);
-  const logo = createDiv(row, "logoBox");
-  logo.textContent = abbr;
-
-  const name = createDiv(row, "nameBox");
-  name.textContent = teamName || "TBD";
-
-  const score = createDiv(row, "scoreBox");
-  score.textContent = ""; // you can later show scores, not used in predictor
-
-  // Disable if empty/TBD
-  if (!teamName) row.classList.add("disabled");
-
-  // Pick highlight
-  const pick = picks.get(match.id);
-  if (pick && teamName && pick === teamName) row.classList.add("picked");
-  if (pick && teamName && pick !== teamName) row.classList.add("loser");
-
-  // Click to pick
-  row.addEventListener("click", () => {
-    if (!teamName) return;
-    setPick(match.id, teamName);
-  });
-
-  return row;
-}
-
-function setPick(matchId, winnerName) {
-  picks.set(matchId, winnerName);
-
-  // Recompute downstream teams based on picks
-  propagateAllPicks();
-
-  // Re-layout because positions might not change, but lines and labels will
-  // (keeping your “way typed” stable)
-  // We do not re-fetch; we re-render from local state.
-  clearAllRenderedMatches();
-  renderBracket();
-}
-
-function clearAllRenderedMatches() {
-  // remove old match cards
-  const cards = el.wrap.querySelectorAll(".match");
-  cards.forEach(c => c.remove());
-}
-
-/* =========================
-   LAYOUT ENGINE (GRAPH-BASED)
-   This is the key to “make your way work”.
-   - Play-In is anchored by order in sheet (within side)
-   - Every later match is positioned at midpoint of its feeder matches
-   - Right side mirrors inward
-   ========================= */
-function layoutSide(side, rounds, isLeftToRight) {
-  const finalId = findFinalMatchId();
-
-  // group matches by round for this side
-  const byRound = new Map();
-  for (const r of rounds) byRound.set(r, []);
-  for (const m of matches) {
-    if (m.side !== side) continue;
-    if (!byRound.has(m.round)) continue;
-    byRound.get(m.round).push(m);
-  }
-
-  // Determine X positions per round, inward toward center
-  // We’ll lay out with local x from LEFT_PAD and later shift right side.
-  const colW = CARD_W + 40;
-  const gapX = ROUND_GAP_X;
-
-  // Compute base X for side columns
-  const totalCols = rounds.length;
-  const sideWidth = totalCols * colW + (totalCols - 1) * gapX;
-
-  // We need global positions:
-  // Left side starts at LEFT_PAD
-  // Right side starts after left + final + gap, but we’ll compute after both sides
-  // For now: left uses positive, right uses placeholder; we’ll adjust right later.
-
-  // 1) Anchor earliest round (Play-In) using sheet order within side
-  // Sort stable by MatchID (or by sheet row order, which OpenSheet gives in order)
-  const firstRound = rounds[0];
-  const baseList = byRound.get(firstRound).slice();
-
-  // Anchor Y positions
-  baseList.forEach((m, i) => {
-    m.y = TOP_PAD + i * (CARD_H + MIN_GAP_Y);
-  });
-
-  // 2) For later rounds: set Y = midpoint of feeders if feeders exist
-  for (let idx = 1; idx < rounds.length; idx++) {
-    const r = rounds[idx];
-    const list = byRound.get(r);
-
-    // Initial guess: keep current y ordering if none
-    list.sort((a, b) => a.id - b.id);
-
-    for (const m of list) {
-      const feeders = incoming.get(m.id) || [];
-      const feedersInSide = feeders
-        .map(f => matchById.get(f.fromId))
-        .filter(x => x && x.side === side);
-
-      if (feedersInSide.length === 2) {
-        const yMid = (feedersInSide[0].y + feedersInSide[1].y) / 2;
-        m.y = yMid;
-      } else if (feedersInSide.length === 1) {
-        m.y = feedersInSide[0].y; // single feeder: follow it
-      } else {
-        // no feeders: keep relative order
-        // (seeded entries can be here)
-        // If y not set, set based on index
-        if (!Number.isFinite(m.y)) m.y = TOP_PAD + list.indexOf(m) * (CARD_H + MIN_GAP_Y);
+    // SeedY anchors
+    for (const n of nodesByDepthDesc) {
+      if (Number.isFinite(n.SeedY) && n.SeedY > 0) {
+        y.set(n.MatchID, (n.SeedY - 1) * spacing);
       }
     }
 
-    // 3) Resolve collisions within the round column
-    resolveVerticalCollisions(list, CARD_H + MIN_GAP_Y);
-  }
-
-  // 4) Set X positions
-  // Left side: columns increase x to the right (toward center)
-  // Right side: columns decrease x to the left (toward center)
-  // We don’t know global right origin yet, so we compute local and shift later.
-  rounds.forEach((r, i) => {
-    const xLocal = isLeftToRight
-      ? (LEFT_PAD + i * (colW + gapX))
-      : (LEFT_PAD + (totalCols - 1 - i) * (colW + gapX));
-
-    for (const m of byRound.get(r)) {
-      // Put cards under header: shift down slightly
-      m.x = xLocal + 20;
-      m.y = m.y + 40; // header space
+    // 2) Midpoint propagate for non-anchored nodes
+    for (const n of nodesByDepthDesc.reverse()) {
+      if (y.has(n.MatchID)) continue;
+      const feeders = state.incoming.get(n.MatchID) || [];
+      if (feeders.length >= 1) {
+        const ys = feeders.map(fid => y.get(fid)).filter(v => Number.isFinite(v));
+        if (ys.length) {
+          y.set(n.MatchID, avg(ys));
+          continue;
+        }
+      }
+      // fallback: stack at bottom of its side
+      const sameSide = [...state.nodes.values()].filter(x => (x.Side || "") === (n.Side || ""));
+      const maxY = maxOf(sameSide.map(s => y.get(s.MatchID)).filter(v => Number.isFinite(v)));
+      y.set(n.MatchID, (Number.isFinite(maxY) ? maxY + spacing : 0));
     }
-  });
 
-  // Bounds
-  const all = rounds.flatMap(r => byRound.get(r));
-  const minX = Math.min(...all.map(m => m.x), Infinity);
-  const maxX = Math.max(...all.map(m => m.x + CARD_W), -Infinity);
-  const minY = Math.min(...all.map(m => m.y), Infinity);
-  const maxY = Math.max(...all.map(m => m.y + CARD_H), -Infinity);
-  const midY = (minY + maxY) / 2;
-
-  return { byRound, bounds: { minX, maxX, minY, maxY, midY } };
-}
-
-function resolveVerticalCollisions(list, minDist) {
-  // list already has y set; enforce minimum spacing top-down
-  list.sort((a, b) => a.y - b.y);
-  for (let i = 1; i < list.length; i++) {
-    const prev = list[i - 1];
-    const cur = list[i];
-    if (cur.y < prev.y + minDist) {
-      cur.y = prev.y + minDist;
+    // 3) Collision pass within each (side, depth) column: ensure minimum spacing
+    const groups = new Map(); // key -> array ids sorted by y
+    for (const n of state.nodes.values()) {
+      const d = depthMap.get(n.MatchID) ?? 0;
+      const side = n.Side || (n.MatchID === state.finalId ? "C" : "");
+      const key = `${side}|${d}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(n.MatchID);
     }
-  }
-}
 
-/* =========================
-   LINES (SVG)
-   Connect from match to its NextMatch slot (A/B)
-   ========================= */
-function drawLines() {
-  clearSvg(el.lines);
+    for (const [key, ids] of groups.entries()) {
+      ids.sort((a, b) => (y.get(a) ?? 0) - (y.get(b) ?? 0));
+      for (let i = 1; i < ids.length; i++) {
+        const prev = ids[i - 1];
+        const cur = ids[i];
+        const min = (y.get(prev) ?? 0) + spacing;
+        if ((y.get(cur) ?? 0) < min) y.set(cur, min);
+      }
+    }
 
-  // Need accurate card positions (after render)
-  for (const m of matches) {
-    if (!m.nextMatchId || !m.nextSlot) continue;
-
-    const from = el.wrap.querySelector(`.match[data-match-id="${m.id}"]`);
-    const to = el.wrap.querySelector(`.match[data-match-id="${m.nextMatchId}"]`);
-    if (!from || !to) continue;
-
-    const fromBox = from.getBoundingClientRect();
-    const toBox = to.getBoundingClientRect();
-    const wrapBox = el.wrap.getBoundingClientRect();
-
-    // Convert to wrap-local coords
-    const fx1 = fromBox.left - wrapBox.left;
-    const fy1 = fromBox.top - wrapBox.top;
-
-    const tx1 = toBox.left - wrapBox.left;
-    const ty1 = toBox.top - wrapBox.top;
-
-    // Start point: right edge if to is right, else left edge
-    const fromCenterY = fy1 + CARD_H / 2;
-
-    const goingRight = tx1 > fx1;
-    const startX = goingRight ? (fx1 + CARD_W) : fx1;
-    const endX = goingRight ? tx1 : (tx1 + CARD_W);
-
-    // End point: slot A is top row midpoint, slot B bottom row midpoint
-    const slotYOffset = (m.nextSlot === "A") ? (ROW_H / 2) : (ROW_H + ROW_H / 2);
-    const endY = ty1 + slotYOffset;
-
-    const startY = fromCenterY;
-
-    // nice bracket curve
-    const midX = (startX + endX) / 2;
-
-    const d = `M ${startX} ${startY}
-               C ${midX} ${startY}, ${midX} ${endY}, ${endX} ${endY}`;
-
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", d);
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", "rgba(0,0,0,0.55)");
-    path.setAttribute("stroke-width", "2.5");
-    path.setAttribute("stroke-linecap", "round");
-    el.lines.appendChild(path);
+    return y;
   }
 
-  fitSvgToContent();
-}
+  // =========================
+  // RENDER MATCH CARD
+  // =========================
+  function renderMatchCard(node) {
+    const el = document.createElement("div");
+    el.className = "match";
+    el.dataset.matchId = String(node.MatchID);
 
-function fitSvgToContent() {
-  // Ensure SVG covers entire wrap content area
-  const box = el.wrap.getBoundingClientRect();
-  el.lines.setAttribute("width", box.width);
-  el.lines.setAttribute("height", box.height);
-  el.lines.setAttribute("viewBox", `0 0 ${box.width} ${box.height}`);
-  el.lines.style.position = "absolute";
-  el.lines.style.left = "0";
-  el.lines.style.top = "0";
-  el.lines.style.pointerEvents = "none";
-}
+    // Resolve displayed teams: use local picks propagation (virtual bracket)
+    const display = getDisplayTeams(node.MatchID);
 
-function clearSvg(svg) {
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
-}
+    const aRow = renderTeamRow(node, "A", display.TeamA);
+    const bRow = renderTeamRow(node, "B", display.TeamB);
 
-/* =========================
-   ZOOM / FIT
-   ========================= */
-function setZoom(v) {
-  zoom = clamp(v, ZOOM_MIN, ZOOM_MAX);
-  el.wrap.style.transform = `scale(${zoom})`;
-}
+    el.appendChild(aRow);
+    el.appendChild(bRow);
 
-function fitToStage(onlyIfUnset = false) {
-  // Fit bracket into stage viewport
-  // Compute content bounds based on rendered cards
-  const cards = Array.from(el.wrap.querySelectorAll(".match"));
-  if (!cards.length) return;
+    // Size/positioning handled by CSS + top style
+    el.style.left = "0px";
+    el.style.right = "0px";
 
-  const wrapRect = el.wrap.getBoundingClientRect();
-  const stageRect = el.stage.getBoundingClientRect();
-
-  // Find content bounding box in wrap-local coords (using style left/top)
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const c of cards) {
-    const x = parseFloat(c.style.left || "0");
-    const y = parseFloat(c.style.top || "0");
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x + CARD_W);
-    maxY = Math.max(maxY, y + CARD_H);
+    return el;
   }
 
-  const contentW = maxX - minX + 60;
-  const contentH = maxY - minY + 60;
+  function renderTeamRow(node, slot, teamNameRaw) {
+    const teamName = teamNameRaw || "TBD";
+    const row = document.createElement("div");
+    row.className = "teamrow";
 
-  const availW = stageRect.width - 40;
-  const availH = stageRect.height - 40;
+    const logo = document.createElement("div");
+    logo.className = "logoBox";
+    logo.textContent = abbreviate(teamName);
 
-  const z = clamp(Math.min(availW / contentW, availH / contentH), ZOOM_MIN, ZOOM_MAX);
+    const name = document.createElement("div");
+    name.className = "nameBox";
+    name.textContent = teamName;
 
-  // If onlyIfUnset and zoom already user-changed, skip
-  if (onlyIfUnset && zoom !== 1.0) {
-    // still ensure transform applied
-    setZoom(zoom);
-    return;
-  }
+    const score = document.createElement("div");
+    score.className = "scoreBox";
+    score.textContent = ""; // prediction mode (no scores)
 
-  zoom = z;
-  el.wrap.style.transform = `scale(${zoom})`;
-}
+    // Winner styling from sheet (actual)
+    if (node.Winner && equalTeam(node.Winner, teamName)) row.classList.add("win");
 
-/* =========================
-   SUBMIT / SYNC / LEADERBOARD
-   (Best-effort: depends on your Apps Script endpoints)
-   ========================= */
-async function submitPredictions() {
-  const username = (el.nameInput?.value || "").trim();
-  if (!username) {
-    alert("Enter your name first (exact spelling).");
-    return;
-  }
+    // Pick styling from local picks
+    const picked = state.picks.get(node.MatchID);
+    if (picked && equalTeam(picked, teamName)) row.classList.add("picked");
+    if (picked && !equalTeam(picked, teamName) && teamName !== "TBD") row.classList.add("loser");
 
-  // Build payload: list of {MatchID, Winner}
-  const payload = [];
-  for (const [id, winner] of picks.entries()) {
-    if (!winner) continue;
-    payload.push({ MatchID: id, Winner: winner });
-  }
+    // Disable clicking TBD
+    if (!teamNameRaw || teamName === "TBD") row.classList.add("disabled");
 
-  try {
-    const res = await fetch(SCRIPT_URL, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "submitPredictions", username, picks: payload }),
+    // Click to pick (team name row)
+    row.addEventListener("click", () => {
+      if (row.classList.contains("disabled")) return;
+
+      // Auto resolve if BYE exists: if opponent is blank/TBD, still allow pick for the known team
+      setPick(node.MatchID, teamName);
     });
 
-    const txt = await res.text();
-    if (!res.ok) throw new Error(txt || `HTTP ${res.status}`);
-    await loadLeaderboard().catch(() => {});
-    alert("Predictions submitted ✅");
-  } catch (e) {
-    alert(`Submit failed: ${e.message}`);
-  }
-}
+    row.appendChild(logo);
+    row.appendChild(name);
+    row.appendChild(score);
 
-async function syncBracket() {
-  try {
-    const res = await fetch(`${SCRIPT_URL}?action=syncBracket&t=${Date.now()}`, { method: "GET" });
-    const txt = await res.text();
-    if (!res.ok) throw new Error(txt || `HTTP ${res.status}`);
-    await refreshAll(true);
-  } catch (e) {
-    alert(`Sync failed: ${e.message}`);
-  }
-}
+    // Mark row for line targeting (slot A/B)
+    row.dataset.slot = slot;
 
-async function loadLeaderboard() {
-  if (!el.leaderboard) return;
-  const res = await fetch(`${LEADERBOARD_URL}?t=${Date.now()}`);
-  if (!res.ok) return;
-  const data = await res.json();
-
-  // Expect rows like {Username, Points}
-  const rows = (Array.isArray(data) ? data : [])
-    .map(r => ({
-      user: String(r.Username ?? r.username ?? "").trim(),
-      points: String(r.Points ?? r.points ?? "").trim(),
-    }))
-    .filter(r => r.user);
-
-  el.leaderboard.innerHTML = "";
-  if (!rows.length) {
-    const li = document.createElement("li");
-    li.className = "lb-row";
-    li.innerHTML = `<div class="lb-user">No entries yet.</div><div class="lb-points"></div>`;
-    el.leaderboard.appendChild(li);
-    return;
+    return row;
   }
 
-  rows.forEach(r => {
-    const li = document.createElement("li");
-    li.className = "lb-row";
-    li.innerHTML = `<div class="lb-user">${escapeHtml(r.user)}</div><div class="lb-points">${escapeHtml(r.points)} pts</div>`;
-    el.leaderboard.appendChild(li);
-  });
-}
+  // =========================
+  // PICKS + AUTO ADVANCE
+  // =========================
+  function setPick(matchId, teamName) {
+    state.picks.set(matchId, teamName);
 
-/* =========================
-   HELPERS
-   ========================= */
-function createDiv(parent, cls) {
-  const d = document.createElement("div");
-  if (cls) d.className = cls;
-  if (parent) parent.appendChild(d);
-  return d;
-}
+    // Propagate forward along the graph
+    propagateForward(matchId);
 
-function findButton(text) {
-  const btns = Array.from(document.querySelectorAll("button"));
-  return btns.find(b => (b.textContent || "").trim().toLowerCase() === text.toLowerCase());
-}
+    // Re-render + redraw
+    renderGraphBracket();
+    drawAllLines();
+  }
 
-function clamp(v, a, b) {
-  return Math.max(a, Math.min(b, v));
-}
+  function propagateForward(fromMatchId) {
+    const edge = state.outgoing.get(fromMatchId);
+    if (!edge) return;
 
-function makeAbbr(name) {
-  if (!name) return "";
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[1][0]).toUpperCase();
-}
+    const winner = state.picks.get(fromMatchId) || getSheetWinner(fromMatchId);
+    if (!winner) return;
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
-  }[c]));
-}
+    const nextId = edge.nextId;
+    const slot = edge.slot;
+
+    // Write into virtual display slot by storing a "slot override" in picksSlotMap
+    // We'll compute display teams dynamically from sheet teams + propagated picks.
+    // To keep it simple, we store synthetic picks in a separate map.
+    if (!state._slotFill) state._slotFill = new Map(); // key: `${matchId}|A` -> team
+    state._slotFill.set(`${nextId}|${slot}`, winner);
+
+    // If the next match already had a pick that is now invalid, clear it (and downstream)
+    const nextDisplay = getDisplayTeams(nextId);
+    const nextPick = state.picks.get(nextId);
+    if (nextPick && !equalTeam(nextPick, nextDisplay.TeamA) && !equalTeam(nextPick, nextDisplay.TeamB)) {
+      clearPickCascade(nextId);
+    }
+
+    // Continue propagation if next match has a pick or becomes auto-decidable (BYE)
+    const maybeAuto = autoDecideIfBye(nextId);
+    if (maybeAuto) {
+      state.picks.set(nextId, maybeAuto);
+    }
+    if (state.picks.has(nextId)) propagateForward(nextId);
+  }
+
+  function clearPickCascade(matchId) {
+    state.picks.delete(matchId);
+    // clear synthetic slot fills forward too
+    const edge = state.outgoing.get(matchId);
+    if (!edge) return;
+
+    const nextId = edge.nextId;
+    if (state._slotFill) {
+      state._slotFill.delete(`${nextId}|A`);
+      state._slotFill.delete(`${nextId}|B`);
+    }
+    clearPickCascade(nextId);
+  }
+
+  function autoDecideIfBye(matchId) {
+    const d = getDisplayTeams(matchId);
+    const a = d.TeamA;
+    const b = d.TeamB;
+
+    // If one side is missing/TBD and the other is real, auto pick the real one
+    if (isRealTeam(a) && !isRealTeam(b)) return a;
+    if (isRealTeam(b) && !isRealTeam(a)) return b;
+    return null;
+  }
+
+  // Display teams = sheet TeamA/TeamB with propagated fills applied
+  function getDisplayTeams(matchId) {
+    const node = state.nodes.get(matchId);
+    if (!node) return { TeamA: "TBD", TeamB: "TBD" };
+
+    let a = node.TeamA || "";
+    let b = node.TeamB || "";
+
+    // Apply slot fills from upstream picks
+    if (state._slotFill) {
+      const fa = state._slotFill.get(`${matchId}|A`);
+      const fb = state._slotFill.get(`${matchId}|B`);
+      if (fa) a = fa;
+      if (fb) b = fb;
+    }
+
+    // Normalize blanks to TBD
+    return {
+      TeamA: a || "TBD",
+      TeamB: b || "TBD"
+    };
+  }
+
+  function getSheetWinner(matchId) {
+    const n = state.nodes.get(matchId);
+    return n?.Winner || "";
+  }
+
+  function buildSubmissionPayload(username) {
+    const picks = [];
+    for (const [matchId, team] of state.picks.entries()) {
+      picks.push({ MatchID: matchId, Pick: team });
+    }
+    // Stable order
+    picks.sort((a, b) => a.MatchID - b.MatchID);
+    return { username, picks };
+  }
+
+  // =========================
+  // LINES
+  // =========================
+  function drawAllLines() {
+    if (!els.lines) return;
+
+    // Resize SVG to cover wrap
+    const wrapRect = els.wrap.getBoundingClientRect();
+    const svg = els.lines;
+    svg.setAttribute("width", Math.ceil(els.wrap.scrollWidth || wrapRect.width));
+    svg.setAttribute("height", Math.ceil(els.wrap.scrollHeight || wrapRect.height));
+
+    // Clear
+    svg.innerHTML = "";
+
+    // Draw each edge from match -> nextMatch slot
+    for (const [fromId, edge] of state.outgoing.entries()) {
+      const toId = edge.nextId;
+      const slot = edge.slot;
+
+      const fromEl = document.querySelector(`.match[data-match-id="${fromId}"]`);
+      const toEl = document.querySelector(`.match[data-match-id="${toId}"]`);
+      if (!fromEl || !toEl) continue;
+
+      const fromRect = fromEl.getBoundingClientRect();
+      const toRect = toEl.getBoundingClientRect();
+      const wrap = els.wrap.getBoundingClientRect();
+
+      // Start at mid-right of from match
+      const x1 = (fromRect.right - wrap.left);
+      const y1 = (fromRect.top - wrap.top) + (MATCH_H / 2);
+
+      // End at left edge of the target row A/B midpoint
+      const toRow = toEl.querySelector(`.teamrow[data-slot="${slot}"]`);
+      const tr = toRow ? toRow.getBoundingClientRect() : toRect;
+      const x2 = (toRect.left - wrap.left);
+      const y2 = (tr.top - wrap.top) + (tr.height / 2);
+
+      // Bezier-ish orthogonal line
+      const midX = (x1 + x2) / 2;
+
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "rgba(0,0,0,0.55)");
+      path.setAttribute("stroke-width", "3");
+      path.setAttribute("stroke-linecap", "round");
+      svg.appendChild(path);
+    }
+  }
+
+  // =========================
+  // LEADERBOARD RENDER
+  // =========================
+  function renderLeaderboard(rows) {
+    if (!els.leaderboardList) return;
+
+    // Clear existing
+    els.leaderboardList.innerHTML = "";
+
+    const norm = (rows || [])
+      .map(r => ({
+        Username: (r.Username || r.username || "").trim(),
+        Points: (r.Points || r.points || "").toString().trim()
+      }))
+      .filter(r => r.Username);
+
+    if (!norm.length) {
+      const li = document.createElement("div");
+      li.className = "hint";
+      li.textContent = "No entries yet.";
+      els.leaderboardList.appendChild(li);
+      return;
+    }
+
+    for (const r of norm) {
+      const row = document.createElement("li");
+      row.className = "lb-row";
+
+      const u = document.createElement("div");
+      u.className = "lb-user";
+      u.textContent = r.Username;
+
+      const p = document.createElement("div");
+      p.className = "lb-points";
+      p.textContent = `${r.Points} pts`;
+
+      row.appendChild(u);
+      row.appendChild(p);
+      els.leaderboardList.appendChild(row);
+    }
+  }
+
+  // =========================
+  // HELPERS
+  // =========================
+  function findBtnByText(text) {
+    const buttons = [...document.querySelectorAll("button")];
+    return buttons.find(b => (b.textContent || "").trim() === text) || null;
+  }
+
+  function toInt(v) {
+    const n = parseInt(String(v || "").trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function cleanTeam(s) {
+    const t = (s ?? "").toString().trim();
+    return t;
+  }
+
+  function equalTeam(a, b) {
+    return (a || "").trim().toLowerCase() === (b || "").trim().toLowerCase();
+  }
+
+  function abbreviate(team) {
+    const t = (team || "").trim();
+    if (!t || t === "TBD") return "";
+    if (t.length <= 3) return t.toUpperCase();
+    // use first letters of up to 2 words
+    const parts = t.split(/\s+/).filter(Boolean);
+    const ab = parts.slice(0, 2).map(p => p[0]).join("");
+    return ab.toUpperCase();
+  }
+
+  function isRealTeam(t) {
+    const s = (t || "").trim();
+    if (!s) return false;
+    if (s.toUpperCase() === "TBD") return false;
+    if (s.toUpperCase() === "BYE") return false;
+    return true;
+  }
+
+  function avg(arr) {
+    if (!arr.length) return 0;
+    return arr.reduce((a, b) => a + b, 0) / arr.length;
+  }
+
+  function maxOf(arr) {
+    let m = -Infinity;
+    for (const v of arr) if (Number.isFinite(v)) m = Math.max(m, v);
+    return m === -Infinity ? 0 : m;
+  }
+
+  function mostCommon(arr) {
+    const m = new Map();
+    for (const x of arr) {
+      const k = (x || "").trim();
+      if (!k) continue;
+      m.set(k, (m.get(k) || 0) + 1);
+    }
+    let best = "";
+    let bestC = 0;
+    for (const [k, c] of m.entries()) {
+      if (c > bestC) { best = k; bestC = c; }
+    }
+    return best;
+  }
+
+  function clamp(x, a, b) {
+    return Math.max(a, Math.min(b, x));
+  }
+
+})();
