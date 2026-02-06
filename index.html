@@ -1,8 +1,8 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Knockout Predictor</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -12,23 +12,24 @@
       <div class="title">🏆 Knockout Predictor</div>
 
       <div class="controls">
-        <input id="username" placeholder="Your name (exact spelling)" autocomplete="off">
+        <input id="username" placeholder="Your name (exact spelling)" />
 
         <button onclick="submitPredictions()">Submit Predictions</button>
-        <button onclick="loadLeaderboard()">Refresh</button>
+        <button onclick="loadAll()">Refresh</button>
         <button onclick="syncBracketToSheet()">Sync Bracket</button>
 
         <div class="zoom-controls">
-          <button onclick="zoomOut()" title="Zoom out">−</button>
-          <button onclick="fitBracket()" title="Fit bracket">Fit</button>
-          <button onclick="zoomIn()" title="Zoom in">+</button>
+          <button onclick="zoomOut()">−</button>
+          <button onclick="fitBracket()">Fit</button>
+          <button onclick="zoomIn()">+</button>
         </div>
       </div>
     </div>
 
     <div class="layout">
+      <!-- Bracket -->
       <div class="stage" id="stage">
-        <div class="bracket-viewport" id="bracketViewport">
+        <div class="bracket-viewport">
           <div class="bracket-wrap" id="bracketWrap">
             <svg id="lines"></svg>
             <div class="columns" id="columns"></div>
@@ -36,9 +37,10 @@
         </div>
       </div>
 
+      <!-- Leaderboard -->
       <div class="side">
         <h2>Leaderboard</h2>
-        <ul id="leaderboard" class="leaderboard"></ul>
+        <ul class="leaderboard" id="leaderboard"></ul>
 
         <div class="hint">
           Tip: click a team name to pick. Your picks auto-advance across rounds.
