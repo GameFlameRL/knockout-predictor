@@ -13,6 +13,9 @@ const ROUND_ORDER = ["R32", "R16", "Quarter", "Semi", "Final"];
 
 let matches = [];
 
+// user picks: matchId -> teamName
+const picksByMatch = new Map();
+
 // layout tuning
 const MATCH_HEIGHT = 92;
 const BASE_GAP = 26;
@@ -23,8 +26,8 @@ const HEADER_H = 54;
 const BUILD_STAMP = new Date().toISOString();
 
 // zoom state
-let userZoom = 1;     // manual zoom multiplier
-let fittedZoom = 1;   // computed fit scale
+let userZoom = 1;
+let fittedZoom = 1;
 
 // ======================================
 // INIT
@@ -37,7 +40,6 @@ window.addEventListener("resize", () => {
   fitBracket();
 });
 
-// expose controls to window
 window.fitBracket = fitBracket;
 window.zoomIn = zoomIn;
 window.zoomOut = zoomOut;
@@ -67,7 +69,6 @@ function loadAll() {
   Promise.all([loadMatches(), loadLeaderboard()])
     .then(() => {
       syncBracketToSheet();
-      // Fit after first render
       setTimeout(fitBracket, 50);
     })
     .catch(() => {});
@@ -195,34 +196,56 @@ function renderBracket() {
     roundEl.appendChild(header);
 
     (groups[roundName] || []).forEach((m, i) => {
+      const matchId = safe(m.MatchID);
       const teamA = safe(m.TeamA);
       const teamB = safe(m.TeamB);
       const winner = safe(m.Winner);
 
       const card = document.createElement("div");
       card.className = "match";
-      card.dataset.matchId = safe(m.MatchID);
+      card.dataset.matchId = matchId;
       card.dataset.index = String(i);
+
+      const picked = picksByMatch.get(matchId) || "";
 
       const aWin = winner && winner === teamA;
       const bWin = winner && winner === teamB;
 
+      const aPicked = picked && picked === teamA;
+      const bPicked = picked && picked === teamB;
+
       card.innerHTML = `
-        <div class="teamrow ${aWin ? "win" : ""}">
+        <div class="teamrow ${aWin ? "win" : ""} ${aPicked ? "picked" : ""}" data-pick="${escapeHtml(teamA)}" data-match="${escapeHtml(matchId)}">
           <div class="logoBox">${initials(teamA)}</div>
           <div class="nameBox">${teamA}</div>
           <div class="scoreBox"></div>
         </div>
-        <div class="teamrow ${bWin ? "win" : ""}">
+        <div class="teamrow ${bWin ? "win" : ""} ${bPicked ? "picked" : ""}" data-pick="${escapeHtml(teamB)}" data-match="${escapeHtml(matchId)}">
           <div class="logoBox">${initials(teamB)}</div>
           <div class="nameBox">${teamB}</div>
           <div class="scoreBox"></div>
         </div>
-        <div class="picks">
-          <label><input type="radio" name="match_${safe(m.MatchID)}" value="${teamA}"> ${teamA}</label>
-          <label><input type="radio" name="match_${safe(m.MatchID)}" value="${teamB}"> ${teamB}</label>
-        </div>
+        <div class="picks"></div>
       `;
+
+      // click-to-pick
+      const rows = card.querySelectorAll(".teamrow");
+      rows.forEach(row => {
+        row.addEventListener("click", () => {
+          const mid = row.getAttribute("data-match");
+          const pick = row.getAttribute("data-pick");
+          if (!mid || !pick) return;
+
+          // If match already has a winner set, block picking (optional)
+          // Comment out these 2 lines if you want picks even after winner
+          if (winner) return;
+
+          picksByMatch.set(mid, pick);
+          // re-render just to update picked styles
+          renderBracket();
+          fitBracket();
+        });
+      });
 
       roundEl.appendChild(card);
     });
@@ -244,7 +267,7 @@ function renderBracket() {
     });
   });
 
-  // Resize SVG overlay to wrapper size (after layout)
+  // Resize SVG overlay
   const rect = wrap.getBoundingClientRect();
   svg.setAttribute("width", rect.width);
   svg.setAttribute("height", rect.height);
@@ -303,15 +326,12 @@ function fitBracket() {
   const columns = document.getElementById("columns");
   if (!stage || !wrap || !columns) return;
 
-  // measure natural content size
-  // scrollWidth/Height gives unscaled layout size
-  const contentW = columns.scrollWidth + 40; // a little padding
-  const contentH = columns.scrollHeight + 120; // header+padding
+  const contentW = columns.scrollWidth + 40;
+  const contentH = columns.scrollHeight + 120;
 
-  const viewW = stage.clientWidth - 28;  // stage padding compensation
+  const viewW = stage.clientWidth - 28;
   const viewH = stage.clientHeight - 28;
 
-  // compute fit scale
   const scale = Math.max(0.3, Math.min(viewW / contentW, viewH / contentH, 1));
   fittedZoom = scale;
 
@@ -365,7 +385,6 @@ function syncBracketToSheet() {
       const destA = safe(dest.TeamA);
       const destB = safe(dest.TeamB);
 
-      // Only overwrite blank/TBD/undefined slots
       const canWriteA = isBlankSlot(destA) || destA === w1;
       const canWriteB = isBlankSlot(destB) || destB === w2;
       if (!canWriteA || !canWriteB) continue;
@@ -416,9 +435,11 @@ function submitPredictions() {
   if (!user) return alert("Enter your username first.");
 
   const rows = [];
+
   matches.forEach(m => {
-    const pick = document.querySelector(`input[name="match_${safe(m.MatchID)}"]:checked`);
-    if (pick) rows.push([new Date().toISOString(), user, safe(m.MatchID), pick.value]);
+    const mid = safe(m.MatchID);
+    const pick = picksByMatch.get(mid);
+    if (pick) rows.push([new Date().toISOString(), user, mid, pick]);
   });
 
   if (!rows.length) return alert("Pick at least one match.");
@@ -463,4 +484,16 @@ function renderLeaderboard(data) {
       </li>
     `;
   });
+}
+
+// ======================================
+// SMALL UTIL
+// ======================================
+function escapeHtml(str) {
+  return String(str)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
