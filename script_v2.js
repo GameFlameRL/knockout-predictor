@@ -5,30 +5,25 @@ const SHEET_ID = "1ilDa0ZleooN3OBruvtOqF9Ym1CitowFjaLCk1GiYiNc";
 const SCRIPT_URL =
   "https://script.google.com/macros/s/AKfycbywemgGWVB87gFdGZGax7mbJ8U6cIoVxI0pYBJMz-Da66SR_qhknP2ogOISs1WtbGjbbg/exec";
 
-// ======================================
 const MATCHES_URL = `https://opensheet.elk.sh/${SHEET_ID}/Matches`;
 const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
 const ROUND_ORDER = ["R32", "R16", "Quarter", "Semi", "Final"];
 
-// Bigger cards + tighter gaps
-const MATCH_HEIGHT = 112;   // card footprint (2 rows + breathing room)
-const BASE_GAP = 14;        // smaller than before = less vertical space
-const COL_WIDTH = 360;      // matches CSS .round width
-const CARD_WIDTH = 320;     // matches CSS .match width
+// Bigger cards + tighter gaps (matches your current look)
+const MATCH_HEIGHT = 112;
+const BASE_GAP = 14;
+const COL_WIDTH = 360;
+const CARD_WIDTH = 320;
 const HEADER_H = 62;
 
 let matches = [];
-
-// user picks: matchId -> pickedTeamName
 const picksByMatch = new Map();
 
-// zoom state
 let userZoom = 1;
 let fittedZoom = 1;
 let currentScale = 1;
 
-// expose controls to window
 window.fitBracket = fitBracket;
 window.zoomIn = zoomIn;
 window.zoomOut = zoomOut;
@@ -36,7 +31,6 @@ window.submitPredictions = submitPredictions;
 window.loadLeaderboard = loadLeaderboard;
 window.syncBracketToSheet = syncBracketToSheet;
 
-// init
 loadAll();
 window.addEventListener("resize", () => {
   renderBracket();
@@ -79,9 +73,7 @@ function loadLeaderboard() {
 // ======================================
 // HELPERS
 // ======================================
-function safe(v) {
-  return (v ?? "").toString().trim();
-}
+function safe(v) { return (v ?? "").toString().trim(); }
 
 function initials(name) {
   return safe(name)
@@ -119,57 +111,63 @@ function groupByRound(matchList) {
   return groups;
 }
 
-// Predicted entrants propagate forward based on picks
+// Build a mapping from MatchID -> { nextMatchId, nextSlot } using your sheet columns
+function buildNextMap() {
+  const map = new Map();
+  matches.forEach(m => {
+    const id = safe(m.MatchID);
+    const nextId = safe(m.NextMatchID);
+    const slotRaw = safe(m.NextSlot).toUpperCase(); // "A" or "B"
+    if (!id) return;
+    if (!nextId) return;
+    if (slotRaw !== "A" && slotRaw !== "B") return;
+    map.set(id, { nextMatchId: nextId, nextSlot: slotRaw });
+  });
+  return map;
+}
+
+// Predicted entrants propagate forward based on picks + mapping
 function computePredictedTeams() {
   const predicted = new Map();
-
-  const groups = groupByRound(matches);
-  const rounds = sortRounds(Object.keys(groups));
+  const nextMap = buildNextMap();
 
   // Seed from sheet
-  rounds.forEach(r => {
-    (groups[r] || []).forEach(m => {
-      predicted.set(safe(m.MatchID), {
-        teamA: safe(m.TeamA),
-        teamB: safe(m.TeamB)
-      });
+  matches.forEach(m => {
+    predicted.set(safe(m.MatchID), {
+      teamA: safe(m.TeamA),
+      teamB: safe(m.TeamB)
     });
   });
 
-  // Propagate picks forward
-  for (let ri = 0; ri < rounds.length - 1; ri++) {
-    const curr = groups[rounds[ri]] || [];
-    const next = groups[rounds[ri + 1]] || [];
+  // Apply predicted propagation: each picked match writes its winner into its target match slot
+  // We do this repeatedly for safety (in case of multi-round propagation).
+  // 4 passes is plenty for R32->Final.
+  for (let pass = 0; pass < 4; pass++) {
+    matches.forEach(m => {
+      const fromId = safe(m.MatchID);
+      const link = nextMap.get(fromId);
+      if (!link) return;
 
-    for (let j = 0; j < next.length; j++) {
-      const m1 = curr[j * 2];
-      const m2 = curr[j * 2 + 1];
-      const dest = next[j];
-      if (!m1 || !m2 || !dest) continue;
+      const fromTeams = predicted.get(fromId) || { teamA: safe(m.TeamA), teamB: safe(m.TeamB) };
+      const pick = safe(picksByMatch.get(fromId));
+      if (!pick) return;
 
-      const m1id = safe(m1.MatchID);
-      const m2id = safe(m2.MatchID);
-      const destId = safe(dest.MatchID);
+      // Only accept pick if it matches one of that match's participants
+      if (pick !== fromTeams.teamA && pick !== fromTeams.teamB) return;
 
-      const m1Teams = predicted.get(m1id) || { teamA: safe(m1.TeamA), teamB: safe(m1.TeamB) };
-      const m2Teams = predicted.get(m2id) || { teamA: safe(m2.TeamA), teamB: safe(m2.TeamB) };
+      const destId = safe(link.nextMatchId);
+      const slot = link.nextSlot; // "A" or "B"
+      const destCurrent = predicted.get(destId) || { teamA: "", teamB: "" };
 
-      const m1Pick = safe(picksByMatch.get(m1id));
-      const m2Pick = safe(picksByMatch.get(m2id));
-
-      if (!m1Pick || !m2Pick) continue;
-      if (m1Pick !== m1Teams.teamA && m1Pick !== m1Teams.teamB) continue;
-      if (m2Pick !== m2Teams.teamA && m2Pick !== m2Teams.teamB) continue;
-
-      const destCurrent = predicted.get(destId) || { teamA: safe(dest.TeamA), teamB: safe(dest.TeamB) };
-      const destAIsBlank = isBlankSlot(destCurrent.teamA);
-      const destBIsBlank = isBlankSlot(destCurrent.teamB);
-
-      predicted.set(destId, {
-        teamA: destAIsBlank ? m1Pick : destCurrent.teamA,
-        teamB: destBIsBlank ? m2Pick : destCurrent.teamB
-      });
-    }
+      // Only write into blank/TBD slots (so real sheet values can win if present)
+      if (slot === "A") {
+        const canWrite = isBlankSlot(destCurrent.teamA);
+        predicted.set(destId, { teamA: canWrite ? pick : destCurrent.teamA, teamB: destCurrent.teamB });
+      } else {
+        const canWrite = isBlankSlot(destCurrent.teamB);
+        predicted.set(destId, { teamA: destCurrent.teamA, teamB: canWrite ? pick : destCurrent.teamB });
+      }
+    });
   }
 
   return predicted;
@@ -208,6 +206,8 @@ function renderBracket() {
       const matchId = safe(m.MatchID);
 
       const pred = predictedTeams.get(matchId) || { teamA: safe(m.TeamA), teamB: safe(m.TeamB) };
+
+      // prefer sheet values, fallback to predicted if sheet blank
       const teamA = safe(m.TeamA) || safe(pred.teamA);
       const teamB = safe(m.TeamB) || safe(pred.teamB);
 
@@ -226,7 +226,6 @@ function renderBracket() {
       const aDisabled = displayA === "TBD";
       const bDisabled = displayB === "TBD";
 
-      // Dim loser when a pick exists (helps clarity)
       const aLoser = picked && picked !== teamA;
       const bLoser = picked && picked !== teamB;
 
@@ -248,20 +247,15 @@ function renderBracket() {
         </div>
       `;
 
-      // click-to-pick
       card.querySelectorAll(".teamrow").forEach(row => {
         row.addEventListener("click", () => {
           const mid = safe(row.getAttribute("data-match"));
           const team = safe(row.getAttribute("data-team"));
           if (!mid || !team) return;
           if (isBlankSlot(team)) return;
-
-          // anti-cheat: block picks if result already set
-          if (winner) return;
+          if (winner) return; // lock after official result exists
 
           picksByMatch.set(mid, team);
-
-          // Re-render + lines will still align (scale compensated)
           renderBracket();
           fitBracket();
         });
@@ -274,7 +268,7 @@ function renderBracket() {
     roundEls.push(roundEl);
   });
 
-  // Position cards (tighter)
+  // Position cards
   roundEls.forEach((roundEl, rIdx) => {
     const cards = [...roundEl.querySelectorAll(".match")];
     const gap = BASE_GAP * Math.pow(2, rIdx);
@@ -287,7 +281,7 @@ function renderBracket() {
     });
   });
 
-  // Set wrapper size so SVG has stable coordinate space (UNSCALED)
+  // Wrapper size for SVG coordinate space
   const contentW = columnsEl.scrollWidth + 24;
   const contentH = columnsEl.scrollHeight + 160;
   wrap.style.width = `${contentW}px`;
@@ -296,7 +290,7 @@ function renderBracket() {
   svg.setAttribute("width", contentW);
   svg.setAttribute("height", contentH);
 
-  // Draw connectors (using scale compensation so it works after picks + zoom)
+  // Connect rounds by visual order (still fine)
   for (let r = 0; r < roundEls.length - 1; r++) {
     const leftCards = [...roundEls[r].querySelectorAll(".match")];
     const rightCards = [...roundEls[r + 1].querySelectorAll(".match")];
@@ -309,7 +303,6 @@ function renderBracket() {
   }
 }
 
-// Convert screen pixels to SVG space by dividing by current scale
 function drawConnectorScaled(svg, wrap, a, b, to) {
   const scale = currentScale || 1;
 
@@ -318,7 +311,6 @@ function drawConnectorScaled(svg, wrap, a, b, to) {
   const rb = b.getBoundingClientRect();
   const rt = to.getBoundingClientRect();
 
-  // Unscaled coordinates inside wrap
   const ax = (ra.right - w.left) / scale;
   const ay = (ra.top - w.top + ra.height / 2) / scale;
 
@@ -369,7 +361,6 @@ function fitBracket() {
 function applyZoom() {
   const wrap = document.getElementById("bracketWrap");
   if (!wrap) return;
-
   currentScale = fittedZoom * userZoom;
   wrap.style.transform = `scale(${currentScale})`;
 }
@@ -377,7 +368,6 @@ function applyZoom() {
 function zoomIn() {
   userZoom = Math.min(2.0, userZoom + 0.1);
   applyZoom();
-  // redraw connectors at new scale
   renderBracket();
 }
 function zoomOut() {
@@ -387,11 +377,53 @@ function zoomOut() {
 }
 
 // ======================================
-// AUTO-ADVANCE ACTUAL WINNERS INTO SHEET
+// SYNC OFFICIAL WINNERS (uses mapping if present)
 // ======================================
 function syncBracketToSheet() {
   if (!matches.length) return;
 
+  const nextMap = buildNextMap();
+  const updatesByDest = new Map(); // destId -> {teamA?, teamB?}
+
+  // If mapping exists for a match, use it; otherwise fallback to old pairing logic
+  const hasAnyMapping = nextMap.size > 0;
+
+  if (hasAnyMapping) {
+    matches.forEach(m => {
+      const fromId = safe(m.MatchID);
+      const link = nextMap.get(fromId);
+      if (!link) return;
+
+      const win = safe(m.Winner);
+      if (!win) return;
+
+      const destId = safe(link.nextMatchId);
+      const slot = link.nextSlot;
+
+      if (!updatesByDest.has(destId)) updatesByDest.set(destId, {});
+      const u = updatesByDest.get(destId);
+      if (slot === "A") u.teamA = win;
+      if (slot === "B") u.teamB = win;
+    });
+
+    const payloads = [];
+    updatesByDest.forEach((u, destId) => {
+      // Only send if we have both sides (keeps bracket tidy)
+      if (!u.teamA || !u.teamB) return;
+      payloads.push({ type: "setMatchTeams", matchId: destId, teamA: u.teamA, teamB: u.teamB });
+    });
+
+    if (!payloads.length) return;
+
+    let chain = Promise.resolve();
+    payloads.forEach(p => {
+      chain = chain.then(() => fetch(SCRIPT_URL, { method:"POST", body: JSON.stringify(p), mode:"no-cors" }));
+    });
+    chain.then(() => loadMatches()).catch(() => {});
+    return;
+  }
+
+  // Fallback: original sequential pairing (if no mapping columns used)
   const groups = groupByRound(matches);
   const rounds = sortRounds(Object.keys(groups));
   const updates = [];
@@ -417,12 +449,7 @@ function syncBracketToSheet() {
       const canWriteB = isBlankSlot(destB) || destB === w2;
       if (!canWriteA || !canWriteB) continue;
 
-      updates.push({
-        type: "setMatchTeams",
-        matchId: safe(dest.MatchID),
-        teamA: w1,
-        teamB: w2
-      });
+      updates.push({ type:"setMatchTeams", matchId: safe(dest.MatchID), teamA: w1, teamB: w2 });
     }
   }
 
@@ -430,13 +457,8 @@ function syncBracketToSheet() {
 
   let chain = Promise.resolve();
   updates.forEach(u => {
-    chain = chain.then(() => fetch(SCRIPT_URL, {
-      method: "POST",
-      body: JSON.stringify(u),
-      mode: "no-cors"
-    }));
+    chain = chain.then(() => fetch(SCRIPT_URL, { method:"POST", body: JSON.stringify(u), mode:"no-cors" }));
   });
-
   chain.then(() => loadMatches()).catch(() => {});
 }
 
@@ -475,7 +497,6 @@ function renderLeaderboard(data) {
   if (!ul) return;
 
   ul.innerHTML = "";
-
   if (!data.length) {
     ul.innerHTML = `<li style="opacity:.8">No entries yet.</li>`;
     return;
