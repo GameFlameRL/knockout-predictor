@@ -10,7 +10,7 @@ const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
 const ROUND_ORDER = ["R32", "R16", "Quarter", "Semi", "Final"];
 
-// Bigger cards + tighter gaps (matches your current look)
+// Matches your current CSS sizing
 const MATCH_HEIGHT = 112;
 const BASE_GAP = 14;
 const COL_WIDTH = 360;
@@ -111,17 +111,17 @@ function groupByRound(matchList) {
   return groups;
 }
 
-// Build a mapping from MatchID -> { nextMatchId, nextSlot } using your sheet columns
+// Map: MatchID -> { nextMatchId, nextSlot } (A/B)
 function buildNextMap() {
   const map = new Map();
   matches.forEach(m => {
     const id = safe(m.MatchID);
     const nextId = safe(m.NextMatchID);
-    const slotRaw = safe(m.NextSlot).toUpperCase(); // "A" or "B"
+    const slot = safe(m.NextSlot).toUpperCase();
     if (!id) return;
     if (!nextId) return;
-    if (slotRaw !== "A" && slotRaw !== "B") return;
-    map.set(id, { nextMatchId: nextId, nextSlot: slotRaw });
+    if (slot !== "A" && slot !== "B") return;
+    map.set(id, { nextMatchId: nextId, nextSlot: slot });
   });
   return map;
 }
@@ -139,10 +139,8 @@ function computePredictedTeams() {
     });
   });
 
-  // Apply predicted propagation: each picked match writes its winner into its target match slot
-  // We do this repeatedly for safety (in case of multi-round propagation).
-  // 4 passes is plenty for R32->Final.
-  for (let pass = 0; pass < 4; pass++) {
+  // Multiple passes so R32 picks flow all the way to Final
+  for (let pass = 0; pass < 5; pass++) {
     matches.forEach(m => {
       const fromId = safe(m.MatchID);
       const link = nextMap.get(fromId);
@@ -152,20 +150,21 @@ function computePredictedTeams() {
       const pick = safe(picksByMatch.get(fromId));
       if (!pick) return;
 
-      // Only accept pick if it matches one of that match's participants
       if (pick !== fromTeams.teamA && pick !== fromTeams.teamB) return;
 
       const destId = safe(link.nextMatchId);
-      const slot = link.nextSlot; // "A" or "B"
+      const slot = link.nextSlot;
+
       const destCurrent = predicted.get(destId) || { teamA: "", teamB: "" };
 
-      // Only write into blank/TBD slots (so real sheet values can win if present)
       if (slot === "A") {
-        const canWrite = isBlankSlot(destCurrent.teamA);
-        predicted.set(destId, { teamA: canWrite ? pick : destCurrent.teamA, teamB: destCurrent.teamB });
+        if (isBlankSlot(destCurrent.teamA)) {
+          predicted.set(destId, { teamA: pick, teamB: destCurrent.teamB });
+        }
       } else {
-        const canWrite = isBlankSlot(destCurrent.teamB);
-        predicted.set(destId, { teamA: destCurrent.teamA, teamB: canWrite ? pick : destCurrent.teamB });
+        if (isBlankSlot(destCurrent.teamB)) {
+          predicted.set(destId, { teamA: destCurrent.teamA, teamB: pick });
+        }
       }
     });
   }
@@ -190,9 +189,12 @@ function renderBracket() {
   const groups = groupByRound(matches);
   const rounds = sortRounds(Object.keys(groups));
   const predictedTeams = computePredictedTeams();
+  const nextMap = buildNextMap();
 
   const roundEls = [];
+  const matchCardById = new Map(); // MatchID -> card element
 
+  // Build columns/cards
   rounds.forEach(roundName => {
     const roundEl = document.createElement("div");
     roundEl.className = "round";
@@ -204,10 +206,9 @@ function renderBracket() {
 
     (groups[roundName] || []).forEach((m, i) => {
       const matchId = safe(m.MatchID);
-
       const pred = predictedTeams.get(matchId) || { teamA: safe(m.TeamA), teamB: safe(m.TeamB) };
 
-      // prefer sheet values, fallback to predicted if sheet blank
+      // Prefer sheet teams if present, otherwise predicted fill
       const teamA = safe(m.TeamA) || safe(pred.teamA);
       const teamB = safe(m.TeamB) || safe(pred.teamB);
 
@@ -232,6 +233,7 @@ function renderBracket() {
       const card = document.createElement("div");
       card.className = "match";
       card.dataset.matchId = matchId;
+      card.dataset.round = roundName;
       card.dataset.index = String(i);
 
       card.innerHTML = `
@@ -247,21 +249,24 @@ function renderBracket() {
         </div>
       `;
 
+      // click-to-pick
       card.querySelectorAll(".teamrow").forEach(row => {
         row.addEventListener("click", () => {
           const mid = safe(row.getAttribute("data-match"));
           const team = safe(row.getAttribute("data-team"));
           if (!mid || !team) return;
           if (isBlankSlot(team)) return;
-          if (winner) return; // lock after official result exists
+          if (winner) return; // lock if official result exists
 
           picksByMatch.set(mid, team);
+
           renderBracket();
           fitBracket();
         });
       });
 
       roundEl.appendChild(card);
+      matchCardById.set(matchId, card);
     });
 
     columnsEl.appendChild(roundEl);
@@ -283,50 +288,53 @@ function renderBracket() {
 
   // Wrapper size for SVG coordinate space
   const contentW = columnsEl.scrollWidth + 24;
-  const contentH = columnsEl.scrollHeight + 160;
+  const contentH = columnsEl.scrollHeight + 180;
   wrap.style.width = `${contentW}px`;
   wrap.style.height = `${contentH}px`;
 
   svg.setAttribute("width", contentW);
   svg.setAttribute("height", contentH);
 
-  // Connect rounds by visual order (still fine)
-  for (let r = 0; r < roundEls.length - 1; r++) {
-    const leftCards = [...roundEls[r].querySelectorAll(".match")];
-    const rightCards = [...roundEls[r + 1].querySelectorAll(".match")];
+  // Draw connector lines using the mapping
+  // Source match -> destination match slot
+  nextMap.forEach((link, fromId) => {
+    const fromCard = matchCardById.get(fromId);
+    const toCard = matchCardById.get(safe(link.nextMatchId));
+    if (!fromCard || !toCard) return;
 
-    rightCards.forEach((rightCard, j) => {
-      const a = leftCards[j * 2];
-      const b = leftCards[j * 2 + 1];
-      if (a && b) drawConnectorScaled(svg, wrap, a, b, rightCard);
-    });
-  }
+    // slot A means connect to top row center, slot B to bottom row center
+    drawMappedConnector(svg, wrap, fromCard, toCard, link.nextSlot);
+  });
 }
 
-function drawConnectorScaled(svg, wrap, a, b, to) {
+// Draw one line from a match card (right middle) to the correct slot (A top / B bottom) of destination card
+function drawMappedConnector(svg, wrap, fromCard, toCard, toSlot) {
   const scale = currentScale || 1;
 
   const w = wrap.getBoundingClientRect();
-  const ra = a.getBoundingClientRect();
-  const rb = b.getBoundingClientRect();
-  const rt = to.getBoundingClientRect();
+  const rf = fromCard.getBoundingClientRect();
+  const rt = toCard.getBoundingClientRect();
 
-  const ax = (ra.right - w.left) / scale;
-  const ay = (ra.top - w.top + ra.height / 2) / scale;
+  // Source point: right-middle of from card
+  const sx = (rf.right - w.left) / scale;
+  const sy = (rf.top - w.top + rf.height / 2) / scale;
 
-  const bx = (rb.right - w.left) / scale;
-  const by = (rb.top - w.top + rb.height / 2) / scale;
+  // Destination point: left-middle of the target slot (top row or bottom row)
+  const rowHeight = rf.height / 2; // card has two rows stacked
+  const targetY =
+    toSlot === "A"
+      ? (rt.top - w.top + rowHeight / 2) / scale
+      : (rt.top - w.top + rowHeight + rowHeight / 2) / scale;
 
   const tx = (rt.left - w.left) / scale;
-  const ty = (rt.top - w.top + rt.height / 2) / scale;
+  const ty = targetY;
 
-  const midX = ax + 30;
+  const midX = sx + 30;
 
   const paths = [
-    `M ${ax} ${ay} L ${midX} ${ay}`,
-    `M ${bx} ${by} L ${midX} ${by}`,
-    `M ${midX} ${ay} L ${midX} ${by}`,
-    `M ${midX} ${(ay + by) / 2} L ${tx} ${ty}`
+    `M ${sx} ${sy} L ${midX} ${sy}`,
+    `M ${midX} ${sy} L ${midX} ${ty}`,
+    `M ${midX} ${ty} L ${tx} ${ty}`
   ];
 
   paths.forEach(d => {
@@ -349,7 +357,7 @@ function fitBracket() {
   if (!stage || !wrap || !columns) return;
 
   const contentW = columns.scrollWidth + 40;
-  const contentH = columns.scrollHeight + 180;
+  const contentH = columns.scrollHeight + 220;
 
   const viewW = stage.clientWidth - 28;
   const viewH = stage.clientHeight - 28;
@@ -377,18 +385,17 @@ function zoomOut() {
 }
 
 // ======================================
-// SYNC OFFICIAL WINNERS (uses mapping if present)
+// SYNC OFFICIAL WINNERS INTO SHEET (uses mapping if present)
 // ======================================
 function syncBracketToSheet() {
   if (!matches.length) return;
 
   const nextMap = buildNextMap();
-  const updatesByDest = new Map(); // destId -> {teamA?, teamB?}
+  const hasMapping = nextMap.size > 0;
 
-  // If mapping exists for a match, use it; otherwise fallback to old pairing logic
-  const hasAnyMapping = nextMap.size > 0;
+  if (hasMapping) {
+    const updatesByDest = new Map(); // destId -> {teamA, teamB}
 
-  if (hasAnyMapping) {
     matches.forEach(m => {
       const fromId = safe(m.MatchID);
       const link = nextMap.get(fromId);
@@ -398,17 +405,15 @@ function syncBracketToSheet() {
       if (!win) return;
 
       const destId = safe(link.nextMatchId);
-      const slot = link.nextSlot;
-
       if (!updatesByDest.has(destId)) updatesByDest.set(destId, {});
+
       const u = updatesByDest.get(destId);
-      if (slot === "A") u.teamA = win;
-      if (slot === "B") u.teamB = win;
+      if (link.nextSlot === "A") u.teamA = win;
+      if (link.nextSlot === "B") u.teamB = win;
     });
 
     const payloads = [];
     updatesByDest.forEach((u, destId) => {
-      // Only send if we have both sides (keeps bracket tidy)
       if (!u.teamA || !u.teamB) return;
       payloads.push({ type: "setMatchTeams", matchId: destId, teamA: u.teamA, teamB: u.teamB });
     });
@@ -417,13 +422,18 @@ function syncBracketToSheet() {
 
     let chain = Promise.resolve();
     payloads.forEach(p => {
-      chain = chain.then(() => fetch(SCRIPT_URL, { method:"POST", body: JSON.stringify(p), mode:"no-cors" }));
+      chain = chain.then(() => fetch(SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify(p),
+        mode: "no-cors"
+      }));
     });
+
     chain.then(() => loadMatches()).catch(() => {});
     return;
   }
 
-  // Fallback: original sequential pairing (if no mapping columns used)
+  // Fallback pairing (if no mapping columns used)
   const groups = groupByRound(matches);
   const rounds = sortRounds(Object.keys(groups));
   const updates = [];
@@ -442,14 +452,7 @@ function syncBracketToSheet() {
       const w2 = safe(m2.Winner);
       if (!w1 || !w2) continue;
 
-      const destA = safe(dest.TeamA);
-      const destB = safe(dest.TeamB);
-
-      const canWriteA = isBlankSlot(destA) || destA === w1;
-      const canWriteB = isBlankSlot(destB) || destB === w2;
-      if (!canWriteA || !canWriteB) continue;
-
-      updates.push({ type:"setMatchTeams", matchId: safe(dest.MatchID), teamA: w1, teamB: w2 });
+      updates.push({ type: "setMatchTeams", matchId: safe(dest.MatchID), teamA: w1, teamB: w2 });
     }
   }
 
@@ -457,8 +460,13 @@ function syncBracketToSheet() {
 
   let chain = Promise.resolve();
   updates.forEach(u => {
-    chain = chain.then(() => fetch(SCRIPT_URL, { method:"POST", body: JSON.stringify(u), mode:"no-cors" }));
+    chain = chain.then(() => fetch(SCRIPT_URL, {
+      method: "POST",
+      body: JSON.stringify(u),
+      mode: "no-cors"
+    }));
   });
+
   chain.then(() => loadMatches()).catch(() => {});
 }
 
@@ -497,6 +505,7 @@ function renderLeaderboard(data) {
   if (!ul) return;
 
   ul.innerHTML = "";
+
   if (!data.length) {
     ul.innerHTML = `<li style="opacity:.8">No entries yet.</li>`;
     return;
