@@ -10,13 +10,13 @@ const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
 const ROUND_ORDER = ["R32", "R16", "Quarter", "Semi", "Final"];
 
-// sizing (tuned for tighter triangle)
-const COL_WIDTH = 340;
+// sizing (vertically denser)
+const COL_WIDTH = 330;
 const CARD_WIDTH = 320;
-const HEADER_H = 62;
-const TOP_PAD = 14;
-const BASE_STEP = 118;     // smaller = less vertical gaps
-const MIN_GAP = 16;
+const HEADER_H = 58;
+const TOP_PAD = 10;
+const BASE_STEP = 92;   // ✅ denser vertically
+const MIN_GAP = 10;
 
 let matches = [];
 const picksByMatch = new Map();
@@ -90,9 +90,7 @@ function isBlankSlot(team) {
   return t === "" || t === "tbd" || t === "?" || t === "null" || t === "undefined";
 }
 
-function isBye(team) {
-  return safe(team).toLowerCase() === "bye";
-}
+function isBye(team) { return safe(team).toLowerCase() === "bye"; }
 
 function autoByePick(teamA, teamB) {
   const aBye = isBye(teamA);
@@ -163,7 +161,7 @@ function buildSideMap(groups, rounds) {
 }
 
 // ======================================
-// PREDICTED FLOW (manual + BYE auto-picks)
+// PREDICTED FLOW (manual + BYE auto)
 // ======================================
 function computePredictedTeams(nextMap) {
   const predicted = new Map();
@@ -209,6 +207,20 @@ function computePredictedTeams(nextMap) {
 }
 
 // ======================================
+// COORDS (within wrap, immune to scale)
+// ======================================
+function getOffsetWithinWrap(el, wrap) {
+  const rEl = el.getBoundingClientRect();
+  const rWrap = wrap.getBoundingClientRect();
+  // return in *unscaled* wrap coordinates
+  const x = (rEl.left - rWrap.left) / (currentScale || 1);
+  const y = (rEl.top - rWrap.top) / (currentScale || 1);
+  const w = rEl.width / (currentScale || 1);
+  const h = rEl.height / (currentScale || 1);
+  return { x, y, w, h };
+}
+
+// ======================================
 // RENDER (two triangles -> Final)
 // ======================================
 function renderBracket() {
@@ -221,6 +233,14 @@ function renderBracket() {
   svg.innerHTML = "";
   if (!matches.length) return;
 
+  // ✅ ensure SVG sits above the cards and spans the wrap
+  wrap.style.position = "relative";
+  svg.style.position = "absolute";
+  svg.style.left = "0";
+  svg.style.top = "0";
+  svg.style.pointerEvents = "none";
+  svg.style.zIndex = "5";
+
   const groups = groupByRound(matches);
   const rounds = sortRounds(Object.keys(groups));
   const nextMap = buildNextMap();
@@ -231,12 +251,14 @@ function renderBracket() {
   const finalRoundName = rounds.find(r => r.toLowerCase() === "final") || "Final";
   const sideRounds = rounds.filter(r => r !== finalRoundName);
 
-  // ✅ Center the whole bracket group so it forms triangles (not stretched)
+  // Centered bracket for triangles
   columnsEl.style.display = "flex";
   columnsEl.style.alignItems = "flex-start";
   columnsEl.style.justifyContent = "center";
-  columnsEl.style.gap = "22px";
+  columnsEl.style.gap = "18px";
   columnsEl.style.padding = "0 20px";
+  columnsEl.style.position = "relative";
+  columnsEl.style.zIndex = "2";
 
   const leftPane = document.createElement("div");
   const centerPane = document.createElement("div");
@@ -246,7 +268,7 @@ function renderBracket() {
     p.style.display = "flex";
     p.style.flexDirection = "row";
     p.style.alignItems = "flex-start";
-    p.style.gap = "10px";
+    p.style.gap = "8px";
     p.style.flex = "0 0 auto";
   });
 
@@ -275,10 +297,11 @@ function renderBracket() {
     rightPane.appendChild(col);
   });
 
+  // Determine card height
   const anyCard = columnsEl.querySelector(".match");
-  const cardH = anyCard ? anyCard.offsetHeight : 92;
+  const cardH = anyCard ? anyCard.offsetHeight : 88;
 
-  // y-centers from feeder midpoints
+  // Triangular vertical placement using feeder midpoints
   const yCenterById = new Map();
 
   function stackBase(list) {
@@ -310,14 +333,14 @@ function renderBracket() {
 
         let yCenter;
         if (typeof yA === "number" && typeof yB === "number") yCenter = (yA + yB) / 2;
-        else yCenter = HEADER_H + TOP_PAD + cardH / 2 + fallbackIndex++ * Math.max(BASE_STEP, cardH + MIN_GAP);
+        else yCenter = HEADER_H + TOP_PAD + cardH / 2 + fallbackIndex++ * (cardH + MIN_GAP);
 
         yCenterById.set(mid, yCenter);
       });
     });
   }
 
-  // Final y centered between semis
+  // Final centered between semis
   (groups[finalRoundName] || []).forEach(m => {
     const mid = safe(m.MatchID);
     const feeders = destSources.get(mid) || {};
@@ -347,23 +370,25 @@ function renderBracket() {
       maxBottom = Math.max(maxBottom, top + cardH);
     });
 
-    roundEl.style.minHeight = `${maxBottom + 30}px`;
+    roundEl.style.minHeight = `${maxBottom + 24}px`;
   });
 
-  // Update wrap & svg
-  const contentW = columnsEl.scrollWidth + 30;
-  const contentH = columnsEl.scrollHeight + 240;
+  // Size wrap & svg
+  const contentW = columnsEl.scrollWidth + 40;
+  const contentH = columnsEl.scrollHeight + 260;
+
   wrap.style.width = `${contentW}px`;
   wrap.style.height = `${contentH}px`;
+
   svg.setAttribute("width", contentW);
   svg.setAttribute("height", contentH);
 
-  // Draw connector lines
+  // Draw lines (now stable)
   nextMap.forEach((link, fromId) => {
     const fromCard = matchCardById.get(fromId);
     const toCard = matchCardById.get(safe(link.nextMatchId));
     if (!fromCard || !toCard) return;
-    drawMappedConnectorDirectional(svg, wrap, fromCard, toCard, link.nextSlot);
+    drawConnectorInWrap(svg, wrap, fromCard, toCard, link.nextSlot);
   });
 }
 
@@ -404,17 +429,13 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
     card.dataset.matchId = matchId;
     card.dataset.round = roundName;
 
-    // keep any label confined
     card.style.position = "relative";
     card.style.overflow = "hidden";
 
-    // ✅ BYE row stays in its normal row position and DOES NOT overlap ✓
-    // We render BYE text in the scoreBox of the bye row, and hide the rest of that row.
     const byeRowStyle = "pointer-events:none;";
     const byeLogoStyle = "visibility:hidden;";
     const byeNameStyle = "visibility:hidden;";
-    const byeScoreStyle =
-      "visibility:visible; font-size:11px; opacity:0.85; letter-spacing:0.3px;";
+    const byeScoreStyle = "visibility:visible; font-size:11px; opacity:0.85; letter-spacing:0.3px;";
 
     card.innerHTML = `
       <div class="teamrow ${aPicked ? "picked" : ""} ${displayA === "TBD" ? "disabled" : ""} ${aIsBye ? "bye" : ""}"
@@ -434,7 +455,6 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
       </div>
     `;
 
-    // click-to-pick (ignore BYE + TBD)
     card.querySelectorAll(".teamrow").forEach(row => {
       row.addEventListener("click", () => {
         const mid = safe(row.getAttribute("data-match"));
@@ -464,31 +484,28 @@ function filterRoundCardsBySide(roundEl, sideById, wantedSide) {
   });
 }
 
-// Direction-aware connector
-function drawMappedConnectorDirectional(svg, wrap, fromCard, toCard, toSlot) {
-  const scale = currentScale || 1;
-
-  const w = wrap.getBoundingClientRect();
-  const rf = fromCard.getBoundingClientRect();
+// ✅ Lines drawn in wrap-space (always visible, always aligned)
+function drawConnectorInWrap(svg, wrap, fromCard, toCard, toSlot) {
+  const fromBox = getOffsetWithinWrap(fromCard, wrap);
 
   const targetRow =
     toSlot === "A"
       ? toCard.querySelector('.teamrow[data-slot="A"]')
       : toCard.querySelector('.teamrow[data-slot="B"]');
 
-  const rr = (targetRow ? targetRow.getBoundingClientRect() : toCard.getBoundingClientRect());
+  const toBox = targetRow ? getOffsetWithinWrap(targetRow, wrap) : getOffsetWithinWrap(toCard, wrap);
 
-  const fromCX = (rf.left + rf.right) / 2;
-  const toCX = (rr.left + rr.right) / 2;
+  const fromCX = fromBox.x + fromBox.w / 2;
+  const toCX = toBox.x + toBox.w / 2;
   const goingRight = toCX >= fromCX;
 
-  const sx = (goingRight ? (rf.right - w.left) : (rf.left - w.left)) / scale;
-  const sy = (rf.top - w.top + rf.height / 2) / scale;
+  const sx = goingRight ? (fromBox.x + fromBox.w) : fromBox.x;
+  const sy = fromBox.y + fromBox.h / 2;
 
-  const tx = (goingRight ? (rr.left - w.left) : (rr.right - w.left)) / scale;
-  const ty = (rr.top - w.top + rr.height / 2) / scale;
+  const tx = goingRight ? toBox.x : (toBox.x + toBox.w);
+  const ty = toBox.y + toBox.h / 2;
 
-  const elbow = 28;
+  const elbow = 22;
   const midX = goingRight ? (sx + elbow) : (sx - elbow);
 
   const segs = [
@@ -500,9 +517,10 @@ function drawMappedConnectorDirectional(svg, wrap, fromCard, toCard, toSlot) {
   segs.forEach(d => {
     const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
     p.setAttribute("d", d);
-    p.setAttribute("stroke", "rgba(0,0,0,0.60)");
+    p.setAttribute("stroke", "rgba(0,0,0,0.70)");
     p.setAttribute("stroke-width", "3");
     p.setAttribute("fill", "none");
+    p.setAttribute("stroke-linecap", "round");
     svg.appendChild(p);
   });
 }
