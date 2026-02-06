@@ -15,7 +15,7 @@ const COL_WIDTH = 330;
 const CARD_WIDTH = 320;
 const HEADER_H = 58;
 const TOP_PAD = 10;
-const BASE_STEP = 92;   // ✅ denser vertically
+const BASE_STEP = 78;   // ✅ denser vertically
 const MIN_GAP = 10;
 
 let matches = [];
