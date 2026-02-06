@@ -13,6 +13,7 @@
 
       <div class="controls">
         <input id="username" placeholder="Your name (exact spelling)" autocomplete="off">
+
         <button onclick="submitPredictions()">Submit Predictions</button>
         <button onclick="loadLeaderboard()">Refresh</button>
         <button onclick="syncBracketToSheet()">Sync Bracket</button>
@@ -22,14 +23,7 @@
           <button onclick="fitBracket()" title="Fit bracket">Fit</button>
           <button onclick="zoomIn()" title="Zoom in">+</button>
         </div>
-
-        <button class="ghost" onclick="toggleDebug()" title="Toggle debug">Debug</button>
       </div>
-    </div>
-
-    <div id="debugPanel" class="debug-panel">
-      <div class="debug-title">Debug</div>
-      <div id="debug" class="debug-text">Loading…</div>
     </div>
 
     <div class="layout">
@@ -45,6 +39,10 @@
       <div class="side">
         <h2>Leaderboard</h2>
         <ul id="leaderboard" class="leaderboard"></ul>
+
+        <div class="hint">
+          Tip: click a team name to pick. Your picks auto-advance across rounds.
+        </div>
       </div>
     </div>
   </div>
