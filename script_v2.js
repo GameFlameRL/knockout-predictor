@@ -11,12 +11,12 @@ const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
 const ROUND_ORDER = ["R32", "R16", "Quarter", "Semi", "Final"];
 
-// layout tuning
-const MATCH_HEIGHT = 96;
-const BASE_GAP = 26;
-const COL_WIDTH = 320;
-const CARD_WIDTH = 280;
-const HEADER_H = 58;
+// Bigger cards + tighter gaps
+const MATCH_HEIGHT = 112;   // card footprint (2 rows + breathing room)
+const BASE_GAP = 14;        // smaller than before = less vertical space
+const COL_WIDTH = 360;      // matches CSS .round width
+const CARD_WIDTH = 320;     // matches CSS .match width
+const HEADER_H = 62;
 
 let matches = [];
 
@@ -26,6 +26,7 @@ const picksByMatch = new Map();
 // zoom state
 let userZoom = 1;
 let fittedZoom = 1;
+let currentScale = 1;
 
 // expose controls to window
 window.fitBracket = fitBracket;
@@ -48,9 +49,7 @@ window.addEventListener("resize", () => {
 function loadAll() {
   Promise.all([loadMatches(), loadLeaderboard()])
     .then(() => {
-      // optional: try to sync actual winners into next rounds
       syncBracketToSheet();
-      // fit after layout
       setTimeout(fitBracket, 50);
     })
     .catch(() => {});
@@ -120,15 +119,14 @@ function groupByRound(matchList) {
   return groups;
 }
 
-// Build predicted teams per match by propagating user picks forward.
-// Returns Map(matchId -> { teamA, teamB })
+// Predicted entrants propagate forward based on picks
 function computePredictedTeams() {
   const predicted = new Map();
 
   const groups = groupByRound(matches);
   const rounds = sortRounds(Object.keys(groups));
 
-  // Seed predicted with whatever the sheet already provides for a match.
+  // Seed from sheet
   rounds.forEach(r => {
     (groups[r] || []).forEach(m => {
       predicted.set(safe(m.MatchID), {
@@ -138,7 +136,7 @@ function computePredictedTeams() {
     });
   });
 
-  // Propagate from round to next using picksByMatch.
+  // Propagate picks forward
   for (let ri = 0; ri < rounds.length - 1; ri++) {
     const curr = groups[rounds[ri]] || [];
     const next = groups[rounds[ri + 1]] || [];
@@ -153,28 +151,24 @@ function computePredictedTeams() {
       const m2id = safe(m2.MatchID);
       const destId = safe(dest.MatchID);
 
-      // Determine participants for the two source matches (sheet or predicted)
       const m1Teams = predicted.get(m1id) || { teamA: safe(m1.TeamA), teamB: safe(m1.TeamB) };
       const m2Teams = predicted.get(m2id) || { teamA: safe(m2.TeamA), teamB: safe(m2.TeamB) };
 
       const m1Pick = safe(picksByMatch.get(m1id));
       const m2Pick = safe(picksByMatch.get(m2id));
 
-      // Only set predicted entrants when both picks exist and are valid team names
       if (!m1Pick || !m2Pick) continue;
       if (m1Pick !== m1Teams.teamA && m1Pick !== m1Teams.teamB) continue;
       if (m2Pick !== m2Teams.teamA && m2Pick !== m2Teams.teamB) continue;
 
-      // DO NOT overwrite real sheet entrants if they exist and are not blank
       const destCurrent = predicted.get(destId) || { teamA: safe(dest.TeamA), teamB: safe(dest.TeamB) };
-
       const destAIsBlank = isBlankSlot(destCurrent.teamA);
       const destBIsBlank = isBlankSlot(destCurrent.teamB);
 
-      const newTeamA = destAIsBlank ? m1Pick : destCurrent.teamA;
-      const newTeamB = destBIsBlank ? m2Pick : destCurrent.teamB;
-
-      predicted.set(destId, { teamA: newTeamA, teamB: newTeamB });
+      predicted.set(destId, {
+        teamA: destAIsBlank ? m1Pick : destCurrent.teamA,
+        teamB: destBIsBlank ? m2Pick : destCurrent.teamB
+      });
     }
   }
 
@@ -201,7 +195,6 @@ function renderBracket() {
 
   const roundEls = [];
 
-  // Create columns
   rounds.forEach(roundName => {
     const roundEl = document.createElement("div");
     roundEl.className = "round";
@@ -214,7 +207,6 @@ function renderBracket() {
     (groups[roundName] || []).forEach((m, i) => {
       const matchId = safe(m.MatchID);
 
-      // Display teams: prefer real sheet, else predicted, else TBD
       const pred = predictedTeams.get(matchId) || { teamA: safe(m.TeamA), teamB: safe(m.TeamB) };
       const teamA = safe(m.TeamA) || safe(pred.teamA);
       const teamB = safe(m.TeamB) || safe(pred.teamB);
@@ -234,41 +226,42 @@ function renderBracket() {
       const aDisabled = displayA === "TBD";
       const bDisabled = displayB === "TBD";
 
+      // Dim loser when a pick exists (helps clarity)
+      const aLoser = picked && picked !== teamA;
+      const bLoser = picked && picked !== teamB;
+
       const card = document.createElement("div");
       card.className = "match";
       card.dataset.matchId = matchId;
       card.dataset.index = String(i);
 
       card.innerHTML = `
-        <div class="teamrow ${aWin ? "win" : ""} ${aPicked ? "picked" : ""} ${aDisabled ? "disabled" : ""}" data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamA)}">
+        <div class="teamrow ${aWin ? "win" : ""} ${aPicked ? "picked" : ""} ${aLoser ? "loser" : ""} ${aDisabled ? "disabled" : ""}" data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamA)}">
           <div class="logoBox">${displayA === "TBD" ? "" : initials(displayA)}</div>
           <div class="nameBox">${escapeHtml(displayA)}</div>
           <div class="scoreBox">${aPicked ? "✓" : ""}</div>
         </div>
-        <div class="teamrow ${bWin ? "win" : ""} ${bPicked ? "picked" : ""} ${bDisabled ? "disabled" : ""}" data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamB)}">
+        <div class="teamrow ${bWin ? "win" : ""} ${bPicked ? "picked" : ""} ${bLoser ? "loser" : ""} ${bDisabled ? "disabled" : ""}" data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamB)}">
           <div class="logoBox">${displayB === "TBD" ? "" : initials(displayB)}</div>
           <div class="nameBox">${escapeHtml(displayB)}</div>
           <div class="scoreBox">${bPicked ? "✓" : ""}</div>
         </div>
       `;
 
-      // Click-to-pick
+      // click-to-pick
       card.querySelectorAll(".teamrow").forEach(row => {
         row.addEventListener("click", () => {
           const mid = safe(row.getAttribute("data-match"));
           const team = safe(row.getAttribute("data-team"));
-
-          // Block invalid picks
           if (!mid || !team) return;
           if (isBlankSlot(team)) return;
 
-          // Optional anti-cheat: block picks after result exists
-          // If you want to allow late picks, comment the next line:
+          // anti-cheat: block picks if result already set
           if (winner) return;
 
           picksByMatch.set(mid, team);
 
-          // Auto-advance happens automatically via computePredictedTeams() on re-render
+          // Re-render + lines will still align (scale compensated)
           renderBracket();
           fitBracket();
         });
@@ -281,7 +274,7 @@ function renderBracket() {
     roundEls.push(roundEl);
   });
 
-  // Position cards by round depth so connectors align
+  // Position cards (tighter)
   roundEls.forEach((roundEl, rIdx) => {
     const cards = [...roundEl.querySelectorAll(".match")];
     const gap = BASE_GAP * Math.pow(2, rIdx);
@@ -294,16 +287,16 @@ function renderBracket() {
     });
   });
 
-  // Make the SVG match the unscaled content size so lines stay correct
+  // Set wrapper size so SVG has stable coordinate space (UNSCALED)
   const contentW = columnsEl.scrollWidth + 24;
-  const contentH = columnsEl.scrollHeight + 120;
+  const contentH = columnsEl.scrollHeight + 160;
   wrap.style.width = `${contentW}px`;
   wrap.style.height = `${contentH}px`;
 
   svg.setAttribute("width", contentW);
   svg.setAttribute("height", contentH);
 
-  // Draw connectors between every round (each destination match connects from two source matches)
+  // Draw connectors (using scale compensation so it works after picks + zoom)
   for (let r = 0; r < roundEls.length - 1; r++) {
     const leftCards = [...roundEls[r].querySelectorAll(".match")];
     const rightCards = [...roundEls[r + 1].querySelectorAll(".match")];
@@ -311,27 +304,31 @@ function renderBracket() {
     rightCards.forEach((rightCard, j) => {
       const a = leftCards[j * 2];
       const b = leftCards[j * 2 + 1];
-      if (a && b) drawConnector(svg, wrap, a, b, rightCard);
+      if (a && b) drawConnectorScaled(svg, wrap, a, b, rightCard);
     });
   }
 }
 
-function drawConnector(svg, wrap, a, b, to) {
+// Convert screen pixels to SVG space by dividing by current scale
+function drawConnectorScaled(svg, wrap, a, b, to) {
+  const scale = currentScale || 1;
+
   const w = wrap.getBoundingClientRect();
   const ra = a.getBoundingClientRect();
   const rb = b.getBoundingClientRect();
   const rt = to.getBoundingClientRect();
 
-  const ax = ra.right - w.left;
-  const ay = ra.top - w.top + ra.height / 2;
+  // Unscaled coordinates inside wrap
+  const ax = (ra.right - w.left) / scale;
+  const ay = (ra.top - w.top + ra.height / 2) / scale;
 
-  const bx = rb.right - w.left;
-  const by = rb.top - w.top + rb.height / 2;
+  const bx = (rb.right - w.left) / scale;
+  const by = (rb.top - w.top + rb.height / 2) / scale;
 
-  const tx = rt.left - w.left;
-  const ty = rt.top - w.top + rt.height / 2;
+  const tx = (rt.left - w.left) / scale;
+  const ty = (rt.top - w.top + rt.height / 2) / scale;
 
-  const midX = ax + 28;
+  const midX = ax + 30;
 
   const paths = [
     `M ${ax} ${ay} L ${midX} ${ay}`,
@@ -360,33 +357,37 @@ function fitBracket() {
   if (!stage || !wrap || !columns) return;
 
   const contentW = columns.scrollWidth + 40;
-  const contentH = columns.scrollHeight + 140;
+  const contentH = columns.scrollHeight + 180;
 
   const viewW = stage.clientWidth - 28;
   const viewH = stage.clientHeight - 28;
 
-  fittedZoom = Math.max(0.3, Math.min(viewW / contentW, viewH / contentH, 1));
+  fittedZoom = Math.max(0.35, Math.min(viewW / contentW, viewH / contentH, 1));
   applyZoom();
 }
 
 function applyZoom() {
   const wrap = document.getElementById("bracketWrap");
   if (!wrap) return;
-  const scale = fittedZoom * userZoom;
-  wrap.style.transform = `scale(${scale})`;
+
+  currentScale = fittedZoom * userZoom;
+  wrap.style.transform = `scale(${currentScale})`;
 }
 
 function zoomIn() {
   userZoom = Math.min(2.0, userZoom + 0.1);
   applyZoom();
+  // redraw connectors at new scale
+  renderBracket();
 }
 function zoomOut() {
   userZoom = Math.max(0.4, userZoom - 0.1);
   applyZoom();
+  renderBracket();
 }
 
 // ======================================
-// AUTO-ADVANCE ACTUAL WINNERS INTO SHEET (optional feature)
+// AUTO-ADVANCE ACTUAL WINNERS INTO SHEET
 // ======================================
 function syncBracketToSheet() {
   if (!matches.length) return;
@@ -427,7 +428,6 @@ function syncBracketToSheet() {
 
   if (!updates.length) return;
 
-  // sequential fire-and-forget
   let chain = Promise.resolve();
   updates.forEach(u => {
     chain = chain.then(() => fetch(SCRIPT_URL, {
