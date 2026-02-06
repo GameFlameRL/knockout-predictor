@@ -96,7 +96,7 @@ function isBye(team) {
   return safe(team).toLowerCase() === "bye";
 }
 
-// If one team is Bye and the other is real, return the real team; else return "".
+// If one team is Bye and the other is real, return the real team; else "".
 function autoByePick(teamA, teamB) {
   const aBye = isBye(teamA);
   const bBye = isBye(teamB);
@@ -174,12 +174,10 @@ function buildSideMap(groups, rounds) {
 function computePredictedTeams(nextMap) {
   const predicted = new Map();
 
-  // Seed current teams
   matches.forEach(m => {
     predicted.set(safe(m.MatchID), { teamA: safe(m.TeamA), teamB: safe(m.TeamB) });
   });
 
-  // Iteratively push winners forward
   for (let pass = 0; pass < 10; pass++) {
     matches.forEach(m => {
       const fromId = safe(m.MatchID);
@@ -190,7 +188,6 @@ function computePredictedTeams(nextMap) {
       const tA = safe(fromTeams.teamA);
       const tB = safe(fromTeams.teamB);
 
-      // effective pick: manual pick OR auto bye pick
       const manualPick = safe(picksByMatch.get(fromId));
       const byePick = autoByePick(tA, tB);
       const pick = manualPick || byePick;
@@ -400,7 +397,6 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
 
     const winner = safe(m.Winner);
 
-    // effective pick for visuals: manual or auto-bye
     const manualPick = safe(picksByMatch.get(matchId));
     const byePick = autoByePick(displayA, displayB);
     const picked = manualPick || byePick;
@@ -408,18 +404,32 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
     const aPicked = picked && picked === teamA;
     const bPicked = picked && picked === teamB;
 
+    const aIsBye = isBye(displayA);
+    const bIsBye = isBye(displayB);
+    const hasBye = aIsBye || bIsBye;
+
     const card = document.createElement("div");
     card.className = "match";
     card.dataset.matchId = matchId;
     card.dataset.round = roundName;
 
-    const aIsBye = isBye(displayA);
-    const bIsBye = isBye(displayB);
+    // ✅ critical: keep BYE badge contained
+    card.style.position = "relative";
+    card.style.overflow = "hidden";
 
-    // Hide bye row visually but keep its height so lines still target a stable slot
-    const byeHideStyle = "opacity:0; pointer-events:none;";
+    // Use visibility hidden to preserve layout without weird opacity overlays
+    const byeHideStyle = "visibility:hidden; pointer-events:none;";
 
     card.innerHTML = `
+      ${hasBye ? `
+        <div class="byeBadge"
+             style="position:absolute; right:8px; top:8px; z-index:3; pointer-events:none;
+                    font-size:11px; padding:2px 6px; border-radius:6px;
+                    background:rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.12);">
+          BYE
+        </div>
+      ` : ""}
+
       <div class="teamrow ${aPicked ? "picked" : ""} ${displayA === "TBD" ? "disabled" : ""} ${aIsBye ? "bye" : ""}"
            style="${aIsBye ? byeHideStyle : ""}"
            data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamA)}" data-slot="A">
@@ -435,11 +445,8 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
         <div class="nameBox">${escapeHtml(displayB)}</div>
         <div class="scoreBox">${bPicked ? "✓" : ""}</div>
       </div>
-
-      ${ (aIsBye || bIsBye) ? `<div style="position:absolute; right:10px; top:10px; font-size:11px; opacity:.75;">BYE</div>` : "" }
     `;
 
-    // click-to-pick (ignore Bye + TBD)
     card.querySelectorAll(".teamrow").forEach(row => {
       row.addEventListener("click", () => {
         const mid = safe(row.getAttribute("data-match"));
@@ -592,7 +599,6 @@ function submitPredictions() {
   const nextMap = buildNextMap();
   const predictedTeams = computePredictedTeams(nextMap);
 
-  // Submit both manual picks AND auto-bye picks so the user's bracket is complete
   const rows = [];
   matches.forEach(m => {
     const mid = safe(m.MatchID);
