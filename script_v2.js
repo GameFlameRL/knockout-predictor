@@ -6,8 +6,6 @@ const SCRIPT_URL =
   "https://script.google.com/macros/s/AKfycbywemgGWVB87gFdGZGax7mbJ8U6cIoVxI0pYBJMz-Da66SR_qhknP2ogOISs1WtbGjbbg/exec";
 
 // ======================================
-// IMPORTANT: NO ?t= CACHE-BUSTER ON OPENSHEET (it causes HTTP 400)
-// You can optionally add ?raw=true if you want raw values.
 const MATCHES_URL = `https://opensheet.elk.sh/${SHEET_ID}/Matches`;
 const LEADERBOARD_URL = `https://opensheet.elk.sh/${SHEET_ID}/Leaderboard`;
 
@@ -22,15 +20,28 @@ const COL_WIDTH = 320;
 const CARD_WIDTH = 280;
 const HEADER_H = 54;
 
-// build stamp so you can confirm newest JS is live
 const BUILD_STAMP = new Date().toISOString();
+
+// zoom state
+let userZoom = 1;     // manual zoom multiplier
+let fittedZoom = 1;   // computed fit scale
 
 // ======================================
 // INIT
 // ======================================
 debugWrite(`BUILD: ${BUILD_STAMP}\nLoading…`);
 loadAll();
-window.addEventListener("resize", renderBracket);
+
+window.addEventListener("resize", () => {
+  renderBracket();
+  fitBracket();
+});
+
+// expose controls to window
+window.fitBracket = fitBracket;
+window.zoomIn = zoomIn;
+window.zoomOut = zoomOut;
+window.toggleDebug = toggleDebug;
 
 // ======================================
 // DEBUG
@@ -39,10 +50,14 @@ function debugWrite(msg) {
   const el = document.getElementById("debug");
   if (el) el.textContent = msg;
 }
-
 function debugAppend(msg) {
   const el = document.getElementById("debug");
   if (el) el.textContent += `\n${msg}`;
+}
+function toggleDebug() {
+  const panel = document.getElementById("debugPanel");
+  if (!panel) return;
+  panel.classList.toggle("hidden");
 }
 
 // ======================================
@@ -51,14 +66,14 @@ function debugAppend(msg) {
 function loadAll() {
   Promise.all([loadMatches(), loadLeaderboard()])
     .then(() => {
-      // auto-sync once on load (safe overwrite rules apply)
       syncBracketToSheet();
+      // Fit after first render
+      setTimeout(fitBracket, 50);
     })
     .catch(() => {});
 }
 
 function loadMatches() {
-  // NO ?t= here
   const url = MATCHES_URL;
 
   debugWrite(
@@ -84,11 +99,10 @@ function loadMatches() {
         debugAppend(
           `First match sample: MatchID=${safe(first.MatchID)} Round=${safe(first.Round)} TeamA=${safe(first.TeamA)} TeamB=${safe(first.TeamB)} Winner=${safe(first.Winner)}`
         );
-      } else {
-        debugAppend(`Matches is empty array. That means opensheet returned [] for your Matches tab.`);
       }
 
       renderBracket();
+      fitBracket();
     })
     .catch(err => {
       debugAppend(`MATCHES ERROR: ${String(err)}`);
@@ -98,7 +112,6 @@ function loadMatches() {
 }
 
 function loadLeaderboard() {
-  // NO ?t= here
   const url = LEADERBOARD_URL;
 
   return fetch(url)
@@ -231,12 +244,12 @@ function renderBracket() {
     });
   });
 
-  // Resize SVG overlay
+  // Resize SVG overlay to wrapper size (after layout)
   const rect = wrap.getBoundingClientRect();
   svg.setAttribute("width", rect.width);
   svg.setAttribute("height", rect.height);
 
-  // Draw connectors between rounds
+  // Draw connectors
   for (let r = 0; r < roundEls.length - 1; r++) {
     const leftCards = [...roundEls[r].querySelectorAll(".match")];
     const rightCards = [...roundEls[r + 1].querySelectorAll(".match")];
@@ -282,6 +295,47 @@ function drawConnector(svg, wrap, a, b, to) {
 }
 
 // ======================================
+// FIT + ZOOM
+// ======================================
+function fitBracket() {
+  const stage = document.getElementById("stage");
+  const wrap = document.getElementById("bracketWrap");
+  const columns = document.getElementById("columns");
+  if (!stage || !wrap || !columns) return;
+
+  // measure natural content size
+  // scrollWidth/Height gives unscaled layout size
+  const contentW = columns.scrollWidth + 40; // a little padding
+  const contentH = columns.scrollHeight + 120; // header+padding
+
+  const viewW = stage.clientWidth - 28;  // stage padding compensation
+  const viewH = stage.clientHeight - 28;
+
+  // compute fit scale
+  const scale = Math.max(0.3, Math.min(viewW / contentW, viewH / contentH, 1));
+  fittedZoom = scale;
+
+  applyZoom();
+}
+
+function applyZoom() {
+  const wrap = document.getElementById("bracketWrap");
+  if (!wrap) return;
+  const scale = fittedZoom * userZoom;
+  wrap.style.transform = `scale(${scale})`;
+}
+
+function zoomIn() {
+  userZoom = Math.min(2.0, userZoom + 0.1);
+  applyZoom();
+}
+
+function zoomOut() {
+  userZoom = Math.max(0.4, userZoom - 0.1);
+  applyZoom();
+}
+
+// ======================================
 // AUTO-ADVANCE + WRITE BACK
 // ======================================
 function syncBracketToSheet() {
@@ -311,6 +365,7 @@ function syncBracketToSheet() {
       const destA = safe(dest.TeamA);
       const destB = safe(dest.TeamB);
 
+      // Only overwrite blank/TBD/undefined slots
       const canWriteA = isBlankSlot(destA) || destA === w1;
       const canWriteB = isBlankSlot(destB) || destB === w2;
       if (!canWriteA || !canWriteB) continue;
