@@ -78,7 +78,9 @@ function loadMatches() {
       if (matches.length) {
         const first = matches[0];
         debugAppend(`First match keys: ${Object.keys(first).join(", ")}`);
-        debugAppend(`First match sample: MatchID=${safe(first.MatchID)} Round=${safe(first.Round)} TeamA=${safe(first.TeamA)} TeamB=${safe(first.TeamB)} Winner=${safe(first.Winner)}`);
+        debugAppend(
+          `First match sample: MatchID=${safe(first.MatchID)} Round=${safe(first.Round)} TeamA=${safe(first.TeamA)} TeamB=${safe(first.TeamB)} Winner=${safe(first.Winner)}`
+        );
       } else {
         debugAppend(`Matches is empty array. That means opensheet returned [] for your Matches tab.`);
       }
@@ -160,10 +162,7 @@ function renderBracket() {
   columnsEl.innerHTML = "";
   svg.innerHTML = "";
 
-  if (!matches.length) {
-    // Keep stage empty but readable
-    return;
-  }
+  if (!matches.length) return;
 
   const groups = groupByRound();
   const rounds = sortRounds(Object.keys(groups));
@@ -332,10 +331,7 @@ function syncBracketToSheet() {
 
 function runSequential_(updates) {
   let chain = Promise.resolve();
-
-  updates.forEach(u => {
-    chain = chain.then(() => postToScript_(u));
-  });
+  updates.forEach(u => { chain = chain.then(() => postToScript_(u)); });
 
   chain
     .then(() => {
@@ -346,7 +342,6 @@ function runSequential_(updates) {
 }
 
 function postToScript_(payload) {
-  // NOTE: no-cors means we can't read response body; we just fire-and-forget.
   return fetch(SCRIPT_URL, {
     method: "POST",
     body: JSON.stringify(payload),
@@ -362,7 +357,6 @@ function submitPredictions() {
   if (!user) return alert("Enter your username first.");
 
   const rows = [];
-
   matches.forEach(m => {
     const pick = document.querySelector(`input[name="match_${safe(m.MatchID)}"]:checked`);
     if (pick) rows.push([new Date().toISOString(), user, safe(m.MatchID), pick.value]);
