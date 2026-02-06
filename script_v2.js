@@ -19,7 +19,7 @@ const BASE_STEP = 130;
 const MIN_GAP = 18;
 
 let matches = [];
-const picksByMatch = new Map();
+const picksByMatch = new Map(); // user picks (manual)
 
 let userZoom = 1;
 let fittedZoom = 1;
@@ -74,7 +74,9 @@ function loadLeaderboard() {
 // ======================================
 // HELPERS
 // ======================================
-function safe(v) { return (v ?? "").toString().trim(); }
+function safe(v) {
+  return (v ?? "").toString().trim();
+}
 
 function initials(name) {
   return safe(name)
@@ -88,6 +90,19 @@ function initials(name) {
 function isBlankSlot(team) {
   const t = safe(team).toLowerCase();
   return t === "" || t === "tbd" || t === "?" || t === "null" || t === "undefined";
+}
+
+function isBye(team) {
+  return safe(team).toLowerCase() === "bye";
+}
+
+// If one team is Bye and the other is real, return the real team; else return "".
+function autoByePick(teamA, teamB) {
+  const aBye = isBye(teamA);
+  const bBye = isBye(teamB);
+  if (aBye && !bBye && !isBlankSlot(teamB)) return safe(teamB);
+  if (bBye && !aBye && !isBlankSlot(teamA)) return safe(teamA);
+  return "";
 }
 
 function sortRounds(foundRounds) {
@@ -153,30 +168,48 @@ function buildSideMap(groups, rounds) {
   return sideById;
 }
 
-// Predicted teams flow forward based on picks
+// ======================================
+// PREDICTION FLOW (manual picks + auto BYE picks)
+// ======================================
 function computePredictedTeams(nextMap) {
   const predicted = new Map();
-  matches.forEach(m => predicted.set(safe(m.MatchID), { teamA: safe(m.TeamA), teamB: safe(m.TeamB) }));
 
-  for (let pass = 0; pass < 8; pass++) {
+  // Seed current teams
+  matches.forEach(m => {
+    predicted.set(safe(m.MatchID), { teamA: safe(m.TeamA), teamB: safe(m.TeamB) });
+  });
+
+  // Iteratively push winners forward
+  for (let pass = 0; pass < 10; pass++) {
     matches.forEach(m => {
       const fromId = safe(m.MatchID);
       const link = nextMap.get(fromId);
       if (!link) return;
 
       const fromTeams = predicted.get(fromId) || { teamA: safe(m.TeamA), teamB: safe(m.TeamB) };
-      const pick = safe(picksByMatch.get(fromId));
+      const tA = safe(fromTeams.teamA);
+      const tB = safe(fromTeams.teamB);
+
+      // effective pick: manual pick OR auto bye pick
+      const manualPick = safe(picksByMatch.get(fromId));
+      const byePick = autoByePick(tA, tB);
+      const pick = manualPick || byePick;
+
       if (!pick) return;
-      if (pick !== fromTeams.teamA && pick !== fromTeams.teamB) return;
+      if (pick !== tA && pick !== tB) return;
 
       const destId = safe(link.nextMatchId);
       const slot = link.nextSlot;
       const destCurrent = predicted.get(destId) || { teamA: "", teamB: "" };
 
       if (slot === "A") {
-        if (isBlankSlot(destCurrent.teamA)) predicted.set(destId, { teamA: pick, teamB: destCurrent.teamB });
+        if (isBlankSlot(destCurrent.teamA) || isBye(destCurrent.teamA)) {
+          predicted.set(destId, { teamA: pick, teamB: destCurrent.teamB });
+        }
       } else {
-        if (isBlankSlot(destCurrent.teamB)) predicted.set(destId, { teamA: destCurrent.teamA, teamB: pick });
+        if (isBlankSlot(destCurrent.teamB) || isBye(destCurrent.teamB)) {
+          predicted.set(destId, { teamA: destCurrent.teamA, teamB: pick });
+        }
       }
     });
   }
@@ -235,7 +268,7 @@ function renderBracket() {
 
   const matchCardById = new Map();
 
-  // LEFT triangle: outer -> inner (R32 ... Semi)
+  // LEFT triangle
   sideRounds.forEach(r => {
     const col = buildRoundColumn(r, groups, predictedTeams, matchCardById);
     filterRoundCardsBySide(col, sideById, "L");
@@ -247,8 +280,7 @@ function renderBracket() {
   filterRoundCardsBySide(finalCol, sideById, "C");
   centerPane.appendChild(finalCol);
 
-  // RIGHT triangle: outer -> inner but mirrored
-  // We still append columns reversed so that Semi sits closest to center.
+  // RIGHT triangle (columns reversed so Semi is near center)
   [...sideRounds].reverse().forEach(r => {
     const col = buildRoundColumn(r, groups, predictedTeams, matchCardById);
     filterRoundCardsBySide(col, sideById, "R");
@@ -258,29 +290,23 @@ function renderBracket() {
   const anyCard = columnsEl.querySelector(".match");
   const cardH = anyCard ? anyCard.offsetHeight : 92;
 
-  // --- Triangular vertical placement ---
-  // We must compute y-centers based on FEEDER MIDPOINTS, but do it per side.
+  // Triangular vertical placement: y-centers from feeder midpoints
   const yCenterById = new Map();
 
-  // Helper to stack a base round side list
   function stackBase(list) {
     list.forEach((m, i) => {
       yCenterById.set(safe(m.MatchID), HEADER_H + TOP_PAD + cardH / 2 + i * BASE_STEP);
     });
   }
 
-  // Base round is earliest (usually R32)
   const baseRound = sideRounds[0] || rounds[0];
   const baseList = groups[baseRound] || [];
-
   stackBase(baseList.filter(m => sideById.get(safe(m.MatchID)) === "L"));
   stackBase(baseList.filter(m => sideById.get(safe(m.MatchID)) === "R"));
 
-  // For later rounds on each side, set y = midpoint of its two feeder matches
   for (let i = 1; i < sideRounds.length; i++) {
     const r = sideRounds[i];
     const list = groups[r] || [];
-
     ["L", "R"].forEach(side => {
       const sideList = list.filter(m => sideById.get(safe(m.MatchID)) === side);
       let fallbackIndex = 0;
@@ -303,7 +329,7 @@ function renderBracket() {
     });
   }
 
-  // Final y centered between its two feeder semis (usually L semi + R semi)
+  // Final y centered between semis
   (groups[finalRoundName] || []).forEach(m => {
     const mid = safe(m.MatchID);
     const feeders = destSources.get(mid) || {};
@@ -318,7 +344,7 @@ function renderBracket() {
     else yCenterById.set(mid, HEADER_H + TOP_PAD + cardH / 2);
   });
 
-  // Apply positions to cards
+  // Apply positions
   columnsEl.querySelectorAll(".round").forEach(roundEl => {
     let maxBottom = HEADER_H + TOP_PAD;
     const cards = [...roundEl.querySelectorAll(".match")];
@@ -344,7 +370,7 @@ function renderBracket() {
   svg.setAttribute("width", contentW);
   svg.setAttribute("height", contentH);
 
-  // Draw lines (direction-aware) so right side mirrors correctly
+  // Draw lines direction-aware
   nextMap.forEach((link, fromId) => {
     const fromCard = matchCardById.get(fromId);
     const toCard = matchCardById.get(safe(link.nextMatchId));
@@ -373,7 +399,11 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
     const displayB = teamB || "TBD";
 
     const winner = safe(m.Winner);
-    const picked = safe(picksByMatch.get(matchId));
+
+    // effective pick for visuals: manual or auto-bye
+    const manualPick = safe(picksByMatch.get(matchId));
+    const byePick = autoByePick(displayA, displayB);
+    const picked = manualPick || byePick;
 
     const aPicked = picked && picked === teamA;
     const bPicked = picked && picked === teamB;
@@ -383,28 +413,41 @@ function buildRoundColumn(roundName, groups, predictedTeams, matchCardById) {
     card.dataset.matchId = matchId;
     card.dataset.round = roundName;
 
+    const aIsBye = isBye(displayA);
+    const bIsBye = isBye(displayB);
+
+    // Hide bye row visually but keep its height so lines still target a stable slot
+    const byeHideStyle = "opacity:0; pointer-events:none;";
+
     card.innerHTML = `
-      <div class="teamrow ${aPicked ? "picked" : ""} ${displayA === "TBD" ? "disabled" : ""}"
+      <div class="teamrow ${aPicked ? "picked" : ""} ${displayA === "TBD" ? "disabled" : ""} ${aIsBye ? "bye" : ""}"
+           style="${aIsBye ? byeHideStyle : ""}"
            data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamA)}" data-slot="A">
-        <div class="logoBox">${displayA === "TBD" ? "" : initials(displayA)}</div>
+        <div class="logoBox">${displayA === "TBD" || aIsBye ? "" : initials(displayA)}</div>
         <div class="nameBox">${escapeHtml(displayA)}</div>
         <div class="scoreBox">${aPicked ? "✓" : ""}</div>
       </div>
-      <div class="teamrow ${bPicked ? "picked" : ""} ${displayB === "TBD" ? "disabled" : ""}"
+
+      <div class="teamrow ${bPicked ? "picked" : ""} ${displayB === "TBD" ? "disabled" : ""} ${bIsBye ? "bye" : ""}"
+           style="${bIsBye ? byeHideStyle : ""}"
            data-match="${escapeHtml(matchId)}" data-team="${escapeHtml(teamB)}" data-slot="B">
-        <div class="logoBox">${displayB === "TBD" ? "" : initials(displayB)}</div>
+        <div class="logoBox">${displayB === "TBD" || bIsBye ? "" : initials(displayB)}</div>
         <div class="nameBox">${escapeHtml(displayB)}</div>
         <div class="scoreBox">${bPicked ? "✓" : ""}</div>
       </div>
+
+      ${ (aIsBye || bIsBye) ? `<div style="position:absolute; right:10px; top:10px; font-size:11px; opacity:.75;">BYE</div>` : "" }
     `;
 
+    // click-to-pick (ignore Bye + TBD)
     card.querySelectorAll(".teamrow").forEach(row => {
       row.addEventListener("click", () => {
         const mid = safe(row.getAttribute("data-match"));
         const team = safe(row.getAttribute("data-team"));
         if (!mid || !team) return;
-        if (isBlankSlot(team)) return;
+        if (isBlankSlot(team) || isBye(team)) return;
         if (winner) return;
+
         picksByMatch.set(mid, team);
         renderBracket();
         fitBracket();
@@ -426,7 +469,7 @@ function filterRoundCardsBySide(roundEl, sideById, wantedSide) {
   });
 }
 
-// Direction-aware connector: fixes right side lines
+// Direction-aware connector (left->right OR right->left)
 function drawMappedConnectorDirectional(svg, wrap, fromCard, toCard, toSlot) {
   const scale = currentScale || 1;
 
@@ -546,10 +589,21 @@ function submitPredictions() {
   const user = safe(document.getElementById("username")?.value);
   if (!user) return alert("Enter your username first.");
 
+  const nextMap = buildNextMap();
+  const predictedTeams = computePredictedTeams(nextMap);
+
+  // Submit both manual picks AND auto-bye picks so the user's bracket is complete
   const rows = [];
   matches.forEach(m => {
     const mid = safe(m.MatchID);
-    const pick = safe(picksByMatch.get(mid));
+    const t = predictedTeams.get(mid) || { teamA: safe(m.TeamA), teamB: safe(m.TeamB) };
+    const tA = safe(t.teamA);
+    const tB = safe(t.teamB);
+
+    const manualPick = safe(picksByMatch.get(mid));
+    const byePick = autoByePick(tA, tB);
+    const pick = manualPick || byePick;
+
     if (pick) rows.push([new Date().toISOString(), user, mid, pick]);
   });
 
