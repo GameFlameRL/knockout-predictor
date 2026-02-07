@@ -26,16 +26,15 @@
   let rawMatches = [];
   let matchById = new Map();
 
-  // Predicted picks:
   // predictedWinnerById: matchId -> teamName
   let predictedWinnerById = new Map();
 
-  // Derived bracket slots:
   // slotTeam[matchId] = { A: teamName, B: teamName }
   let slotTeam = new Map();
 
   // DOM refs
   const els = {
+    stage: document.querySelector(".stage"),
     wrap: document.getElementById("wrap"),
     viewport: document.getElementById("viewport"),
     lines: document.getElementById("lines"),
@@ -72,14 +71,14 @@
     zoom = Math.max(0.35, Math.min(1.6, z));
     els.wrap.style.transform = `scale(${zoom})`;
     drawLines();
+    sizeViewportToContent(); // CHANGED: remove empty space
   }
 
-  // CHANGED: fit bracket to BOTH width + height, always
+  // Fit bracket to BOTH width + height, always
   function fitZoom() {
     const vp = els.viewport.getBoundingClientRect();
     const wr = els.wrap.getBoundingClientRect();
 
-    // wr is scaled, so divide by zoom to get real content size
     const contentW = (wr.width / zoom) || els.wrap.scrollWidth || 1;
     const contentH = (wr.height / zoom) || els.wrap.scrollHeight || 1;
 
@@ -89,6 +88,23 @@
 
     const target = Math.max(0.35, Math.min(1.2, Math.min(zW, zH)));
     setZoom(target);
+  }
+
+  // CHANGED: shrink the stage/viewport to the bracket’s scaled height (no dead space)
+  function sizeViewportToContent() {
+    const wr = els.wrap.getBoundingClientRect();
+
+    // wr.height is already scaled (because transform). Use it directly for visual height.
+    const scaledH = Math.ceil(wr.height);
+
+    // A little breathing room for borders/padding
+    const pad = 24;
+
+    // Set viewport height so it hugs the bracket
+    els.viewport.style.height = `${Math.max(220, scaledH + pad)}px`;
+
+    // Stage height wraps viewport (stage has its own padding already)
+    els.stage.style.height = "auto";
   }
 
   // =========================
@@ -414,10 +430,15 @@
 
     const wrapRect = els.wrap.getBoundingClientRect();
     const svg = els.lines;
-    svg.setAttribute("width", String(els.wrap.scrollWidth || wrapRect.width));
-    svg.setAttribute("height", String(els.wrap.scrollHeight || wrapRect.height));
 
-    function anchorFor(matchId, slot) {
+    // Size SVG to unscaled coords so paths match anchors
+    const unscaledW = Math.ceil(wrapRect.width / zoom);
+    const unscaledH = Math.ceil(wrapRect.height / zoom);
+    svg.setAttribute("width", String(unscaledW));
+    svg.setAttribute("height", String(unscaledH));
+    svg.setAttribute("viewBox", `0 0 ${unscaledW} ${unscaledH}`);
+
+    function rowEdge(matchId, slot, edge /* "left"|"right" */) {
       const card = matchElById.get(matchId);
       if (!card) return null;
       const row = card.querySelector(`.teamrow[data-slot="${slot}"]`);
@@ -426,52 +447,58 @@
       const rowRect = row.getBoundingClientRect();
       const wrapR = els.wrap.getBoundingClientRect();
 
-      const x = (rowRect.right - wrapR.left) / zoom;
+      const xPx = edge === "right" ? rowRect.right : rowRect.left;
+      const x = (xPx - wrapR.left) / zoom;
       const y = (rowRect.top - wrapR.top + rowRect.height / 2) / zoom;
       return { x, y };
     }
 
-    function anchorLeftEdge(matchId, slot) {
-      const card = matchElById.get(matchId);
-      if (!card) return null;
-      const row = card.querySelector(`.teamrow[data-slot="${slot}"]`);
-      if (!row) return null;
+    function matchOutputAnchor(m) {
+      // Winner output edge depends on side:
+      // L feeds to the right, R feeds to the left
+      const outEdge = (m.Side === "R") ? "left" : "right";
 
-      const rowRect = row.getBoundingClientRect();
-      const wrapR = els.wrap.getBoundingClientRect();
+      const a = rowEdge(m.MatchID, "A", outEdge);
+      const b = rowEdge(m.MatchID, "B", outEdge);
+      if (!a || !b) return null;
 
-      const x = (rowRect.left - wrapR.left) / zoom;
-      const y = (rowRect.top - wrapR.top + rowRect.height / 2) / zoom;
-      return { x, y };
+      return { x: (outEdge === "right" ? Math.max(a.x, b.x) : Math.min(a.x, b.x)), y: (a.y + b.y) / 2 };
+    }
+
+    function destSlotAnchor(sourceMatch, destId, destSlot) {
+      const destM = matchById.get(destId);
+      if (!destM) return null;
+
+      // Input edge depends on destination:
+      // L matches receive from left, so connect to LEFT edge.
+      // R matches receive from right, so connect to RIGHT edge.
+      // Center receives from both: connect from L -> left edge, from R -> right edge.
+      let inEdge = "left";
+      if (destM.Side === "R") inEdge = "right";
+      if (destM.Side === "C") inEdge = (sourceMatch.Side === "R") ? "right" : "left";
+
+      return rowEdge(destId, destSlot, inEdge);
     }
 
     for (const m of rawMatches) {
       if (!m.NextMatchID || !m.NextSlot) continue;
 
-      const destId = m.NextMatchID;
-      const destSlot = m.NextSlot;
+      const out = matchOutputAnchor(m);
+      if (!out) continue;
 
-      const aOut = anchorFor(m.MatchID, "A");
-      const bOut = anchorFor(m.MatchID, "B");
-      if (!aOut || !bOut) continue;
-
-      const x1 = Math.max(aOut.x, bOut.x);
-      const y1 = (aOut.y + bOut.y) / 2;
-
-      const dest = anchorLeftEdge(destId, destSlot);
+      const dest = destSlotAnchor(m, m.NextMatchID, m.NextSlot);
       if (!dest) continue;
 
-      const x2 = dest.x;
-      const y2 = dest.y;
+      const x1 = out.x, y1 = out.y;
+      const x2 = dest.x, y2 = dest.y;
 
-      const midX = (x1 + x2) / 2;
+      const midX = x1 + (x2 - x1) * 0.5;
 
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("fill", "none");
       path.setAttribute("stroke", "rgba(0,0,0,0.55)");
       path.setAttribute("stroke-width", "2");
       path.setAttribute("d", `M ${x1} ${y1} H ${midX} V ${y2} H ${x2}`);
-
       svg.appendChild(path);
     }
   }
@@ -500,7 +527,8 @@
     renderBracket();
     requestAnimationFrame(() => {
       drawLines();
-      fitZoom(); // CHANGED: always fit after render
+      fitZoom();              // keep it fitting
+      sizeViewportToContent(); // and remove dead space
     });
   }
 
@@ -589,16 +617,19 @@
     els.zoomOut.addEventListener("click", () => setZoom(zoom - 0.1));
     els.zoomFit.addEventListener("click", () => fitZoom());
 
-    // CHANGED: always refit on resize (and redraw lines)
     window.addEventListener("resize", () => {
       fitZoom();
       drawLines();
+      sizeViewportToContent();
     });
 
     try {
       await refreshAll();
       await refreshLeaderboardOnly();
-      setTimeout(() => fitZoom(), 50);
+      setTimeout(() => {
+        fitZoom();
+        sizeViewportToContent();
+      }, 50);
     } catch (e) {
       console.error(e);
       alert(e.message);
