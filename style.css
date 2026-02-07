@@ -15,6 +15,13 @@
   --pickText: #101010;
 
   --line: rgba(0,0,0,0.55);
+
+  /* === BRACKET GEOMETRY (FIXES OVERLAP) === */
+  --colGap: 14px;        /* gap between round columns */
+  --colW: 320px;         /* width of each round column (>= card width) */
+  --cardW: 300px;        /* match card width */
+  --centerW: 360px;      /* center block width */
+  --centerCardW: 320px;  /* final match card width */
 }
 
 *{ box-sizing:border-box; }
@@ -138,20 +145,23 @@ body{
   align-items:flex-start;
 }
 
+/* CHANGED: half is now wide enough for 4 full columns */
 .half{
-  width: 600px;
+  width: calc((4 * var(--colW)) + (3 * var(--colGap)));
   position: relative;
 }
 
+/* CHANGED: center uses variable */
 .center{
-  width: 360px;
+  width: var(--centerW);
   position: relative;
 }
 
+/* CHANGED: header columns match body columns */
 .half-header{
   display:grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
+  grid-template-columns: repeat(4, var(--colW));
+  gap: var(--colGap);
   margin-bottom: 12px;
 }
 
@@ -169,11 +179,12 @@ body{
   font-size: 14px;
 }
 
+/* CHANGED: body columns are fixed-width so cards can't overlap */
 .half-body{
   position: relative;
   display:grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
+  grid-template-columns: repeat(4, var(--colW));
+  gap: var(--colGap);
   min-height: 600px;
 }
 
@@ -182,17 +193,20 @@ body{
   min-height: 600px;
 }
 
+/* CHANGED: round columns have real width */
 .round-col{
   position: relative;
   min-height: 600px;
+  width: var(--colW);
 }
 
 .center-col{
-  width: 360px;
+  width: var(--centerW);
 }
 
+/* CHANGED: card width uses variable */
 .match{
-  width: 300px;
+  width: var(--cardW);
   border: 2px solid rgba(255,255,255,0.30);
   background: rgba(0,0,0,0.16);
   box-shadow: inset 0 0 0 1px rgba(0,0,0,0.35);
@@ -201,8 +215,9 @@ body{
   transform: translateX(-50%);
 }
 
+/* CHANGED: final card uses variable */
 .center .match{
-  width: 320px;
+  width: var(--centerCardW);
 }
 
 .teamrow{
