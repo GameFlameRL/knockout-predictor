@@ -1,8 +1,9 @@
+<!-- index.html -->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Knockout Predictor</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -12,40 +13,78 @@
       <div class="title">🏆 Knockout Predictor</div>
 
       <div class="controls">
-        <input id="username" placeholder="Your name (exact spelling)" />
-
-        <button onclick="submitPredictions()">Submit Predictions</button>
-        <button onclick="loadAll()">Refresh</button>
-        <button onclick="syncBracketToSheet()">Sync Bracket</button>
+        <input id="username" placeholder="Your name (exact spelling)" autocomplete="off" />
+        <button id="submitBtn">Submit Predictions</button>
+        <button id="refreshBtn">Refresh</button>
+        <button id="syncBtn">Sync Bracket</button>
 
         <div class="zoom-controls">
-          <button onclick="zoomOut()">−</button>
-          <button onclick="fitBracket()">Fit</button>
-          <button onclick="zoomIn()">+</button>
+          <button id="zoomOut">−</button>
+          <button id="zoomFit">Fit</button>
+          <button id="zoomIn">+</button>
         </div>
       </div>
     </div>
 
     <div class="layout">
-      <!-- Bracket -->
-      <div class="stage" id="stage">
-        <div class="bracket-viewport">
-          <div class="bracket-wrap" id="bracketWrap">
+      <div class="stage">
+        <div class="bracket-viewport" id="viewport">
+          <div class="bracket-wrap" id="wrap">
             <svg id="lines"></svg>
-            <div class="columns" id="columns"></div>
+
+            <div class="bracket-grid" id="grid">
+              <!-- LEFT -->
+              <div class="half half-left">
+                <div class="half-header">
+                  <div class="round-header">Play-In</div>
+                  <div class="round-header">R16</div>
+                  <div class="round-header">Quarter</div>
+                  <div class="round-header">Semi</div>
+                </div>
+                <div class="half-body" id="leftBody">
+                  <div class="round-col" data-side="L" data-round="Play-In"></div>
+                  <div class="round-col" data-side="L" data-round="R16"></div>
+                  <div class="round-col" data-side="L" data-round="Quarter"></div>
+                  <div class="round-col" data-side="L" data-round="Semi"></div>
+                </div>
+              </div>
+
+              <!-- CENTER -->
+              <div class="center">
+                <div class="round-header center-header">Final</div>
+                <div class="center-body">
+                  <div class="round-col center-col" data-side="C" data-round="Final"></div>
+                </div>
+              </div>
+
+              <!-- RIGHT (mirrored order visually) -->
+              <div class="half half-right">
+                <div class="half-header">
+                  <div class="round-header">Semi</div>
+                  <div class="round-header">Quarter</div>
+                  <div class="round-header">R16</div>
+                  <div class="round-header">Play-In</div>
+                </div>
+                <div class="half-body" id="rightBody">
+                  <div class="round-col" data-side="R" data-round="Semi"></div>
+                  <div class="round-col" data-side="R" data-round="Quarter"></div>
+                  <div class="round-col" data-side="R" data-round="R16"></div>
+                  <div class="round-col" data-side="R" data-round="Play-In"></div>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
       </div>
 
-      <!-- Leaderboard -->
-      <div class="side">
+      <aside class="side">
         <h2>Leaderboard</h2>
-        <ul class="leaderboard" id="leaderboard"></ul>
-
+        <ul id="leaderboard" class="leaderboard"></ul>
         <div class="hint">
           Tip: click a team name to pick. Your picks auto-advance across rounds.
         </div>
-      </div>
+      </aside>
     </div>
   </div>
 
