@@ -98,28 +98,31 @@ body{
   text-align:center;
 }
 
-/* CHANGED: leaderboard goes underneath */
+/* leaderboard underneath */
 .layout{
   display:flex;
   flex-direction: column;
   gap: 14px;
 }
 
+/* CHANGED: stage is no longer fixed-height (JS will size it to content) */
 .stage{
   position: relative;
   border-radius: 12px;
   padding: 14px;
   background: rgba(0,0,0,0.12);
   overflow: hidden;
-  height: 680px;
+  height: auto;
 }
 
+/* CHANGED: viewport height will be set by JS to match the scaled bracket */
 .bracket-viewport{
   width: 100%;
-  height: 100%;
   position: relative;
+  height: auto;
 }
 
+/* still transformed/positioned for zoom */
 .bracket-wrap{
   position: absolute;
   top: 0;
@@ -143,7 +146,6 @@ body{
   align-items:flex-start;
 }
 
-/* Each half must be wide enough for 4 full columns */
 .half{
   width: calc((4 * var(--colW)) + (3 * var(--colGap)));
   position: relative;
@@ -175,22 +177,23 @@ body{
   font-size: 14px;
 }
 
+/* CHANGED: remove big forced min-heights so the bracket can shrink */
 .half-body{
   position: relative;
   display:grid;
   grid-template-columns: repeat(4, var(--colW));
   gap: var(--colGap);
-  min-height: 600px;
+  min-height: 0;
 }
 
 .center-body{
   position: relative;
-  min-height: 600px;
+  min-height: 0;
 }
 
 .round-col{
   position: relative;
-  min-height: 600px;
+  min-height: 0;
   width: var(--colW);
 }
 
@@ -291,7 +294,7 @@ body{
 }
 .teamrow.disabled:hover{ filter:none; }
 
-/* CHANGED: leaderboard underneath, full-width, no fixed height */
+/* leaderboard underneath, full-width */
 .side{
   border-radius: 12px;
   padding: 14px;
