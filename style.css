@@ -269,4 +269,64 @@ body{
   background: linear-gradient(90deg, var(--pickBg), rgba(255,255,255,0.10));
   outline: 4px solid var(--pickGlow);
   outline-offset: -3px;
-  box-shadow: 0 0 0 2px rgba(0,0,0,0.20
+  box-shadow: 0 0 0 2px rgba(0,0,0,0.20), 0 0 18px rgba(255,255,255,0.22);
+  color: var(--pickText);
+}
+.teamrow.picked .scoreBox{
+  background: rgba(255,255,255,0.60);
+  color: #0b0b0b;
+}
+
+.teamrow.loser{ opacity: 0.55; }
+
+.teamrow.disabled{
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.teamrow.disabled:hover{ filter:none; }
+
+.side{
+  border-radius: 12px;
+  padding: 14px;
+  background: rgba(0,0,0,0.12);
+  height: 680px;
+  overflow: auto;
+}
+
+.side h2{
+  margin: 0 0 10px;
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.leaderboard{
+  list-style:none;
+  padding:0;
+  margin:0;
+  display:flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lb-row{
+  display:flex;
+  justify-content: space-between;
+  align-items:center;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(0,0,0,0.35);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.lb-user{ font-weight: 900; }
+.lb-points{ opacity: .85; font-weight: 800; }
+
+.hint{
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed rgba(0,0,0,0.35);
+  background: rgba(255,255,255,0.06);
+  opacity: 0.9;
+  font-size: 13px;
+}
