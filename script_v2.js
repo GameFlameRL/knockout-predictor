@@ -69,25 +69,32 @@
   }
 
   function setZoom(z) {
-    zoom = Math.max(0.4, Math.min(1.6, z));
+    zoom = Math.max(0.35, Math.min(1.6, z));
     els.wrap.style.transform = `scale(${zoom})`;
     drawLines();
   }
 
+  // CHANGED: fit bracket to BOTH width + height, always
   function fitZoom() {
-    // Fit whole bracket width into viewport
     const vp = els.viewport.getBoundingClientRect();
-    const contentW = els.wrap.scrollWidth || els.wrap.getBoundingClientRect().width;
-    if (!contentW) return;
-    const target = Math.max(0.4, Math.min(1.2, (vp.width - 20) / contentW));
+    const wr = els.wrap.getBoundingClientRect();
+
+    // wr is scaled, so divide by zoom to get real content size
+    const contentW = (wr.width / zoom) || els.wrap.scrollWidth || 1;
+    const contentH = (wr.height / zoom) || els.wrap.scrollHeight || 1;
+
+    const pad = 24;
+    const zW = (vp.width - pad) / contentW;
+    const zH = (vp.height - pad) / contentH;
+
+    const target = Math.max(0.35, Math.min(1.2, Math.min(zW, zH)));
     setZoom(target);
   }
 
   // =========================
-  // FETCH (GViz instead of OpenSheet)
+  // FETCH (GViz)
   // =========================
   async function loadMatches() {
-    // GViz endpoint (more reliable than opensheet.elk.sh)
     const url =
       `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq` +
       `?tqx=out:json&sheet=${encodeURIComponent(MATCHES_TAB)}&t=${Date.now()}`;
@@ -97,7 +104,6 @@
 
     const text = await r.text();
 
-    // gviz returns: google.visualization.Query.setResponse({...});
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     if (start === -1 || end === -1) {
@@ -109,7 +115,6 @@
     const cols = (table?.cols || []).map(c => norm(c.label || c.id));
     const rows = table?.rows || [];
 
-    // Convert to array of objects using header labels
     const out = rows.map((rw) => {
       const obj = {};
       const cells = rw.c || [];
@@ -120,15 +125,10 @@
       return obj;
     });
 
-    // If headers are blank, you’ll end up with col0/col1...
-    // Your Matches sheet should have header row like:
-    // MatchID, Round, TeamA, TeamB, Winner, NextMatchID, NextSlot, Side, SeedY
     return Array.isArray(out) ? out : [];
   }
 
   async function loadLeaderboard() {
-    // Expects Apps Script to return:
-    // [{ Username: "name", Points: "12" }, ...]
     try {
       const u = `${SCRIPT_URL}?action=leaderboard&t=${Date.now()}`;
       const r = await fetch(u);
@@ -140,7 +140,6 @@
     }
   }
 
-  // Optional: sync winners from sheet (if you implement it server-side)
   async function syncBracket() {
     try {
       const u = `${SCRIPT_URL}?action=sync&t=${Date.now()}`;
@@ -191,10 +190,8 @@
   }
 
   function applyPredictionsForward() {
-    // Start from base sheet slots each time and re-apply winners in topological-ish order.
     initSlotsFromSheet();
 
-    // We propagate by iterating until no change (small graph, safe).
     let changed = true;
     let guard = 0;
 
@@ -221,7 +218,6 @@
       }
     }
 
-    // After propagation, validate picks: if a pick is no longer one of the two teams, clear it.
     for (const m of rawMatches) {
       const pick = predictedWinnerById.get(m.MatchID);
       if (!pick) continue;
@@ -229,9 +225,7 @@
       if (!s) continue;
       const a = norm(s.A);
       const b = norm(s.B);
-      if (pick !== a && pick !== b) {
-        predictedWinnerById.delete(m.MatchID);
-      }
+      if (pick !== a && pick !== b) predictedWinnerById.delete(m.MatchID);
     }
   }
 
@@ -248,12 +242,10 @@
     if (!isRealTeam(teamName)) return;
     if (teamName !== a && teamName !== b) return;
 
-    // Toggle: clicking the already-picked team clears the pick
     const current = predictedWinnerById.get(matchId);
     if (current === teamName) predictedWinnerById.delete(matchId);
     else predictedWinnerById.set(matchId, teamName);
 
-    // Recompute forward and clear invalid downstream picks automatically
     applyPredictionsForward();
     renderAll();
   }
@@ -266,7 +258,7 @@
   }
 
   function groupBySideRound() {
-    const groups = new Map(); // key `${side}|${round}` -> matches[]
+    const groups = new Map();
     for (const m of rawMatches) {
       const key = `${m.Side}|${m.Round}`;
       if (!groups.has(key)) groups.set(key, []);
@@ -280,32 +272,26 @@
   }
 
   function computePositions(groups) {
-    // pos: matchId -> { x, y }
     const pos = new Map();
 
-    // Helper: place a column’s matches by (seedY) baseline
     function placeColumn(side, round, colIndex) {
       const key = `${side}|${round}`;
       const ms = groups.get(key) || [];
-      // tighter as we move inward
       const t = Math.max(0, Math.min(3, colIndex));
       const gap = Math.max(V_GAP_MIN, V_GAP0 - t * 3);
 
       for (let i = 0; i < ms.length; i++) {
         const m = ms[i];
-        // Use SeedY if present (1..), else fallback to index
         const seed = (m.SeedY && m.SeedY !== 9999) ? m.SeedY : (i + 1);
         const y = COL_PAD_TOP + (seed - 1) * (CARD_H + gap);
         pos.set(m.MatchID, { x: 0, y });
       }
     }
 
-    // Baseline placement for outer columns
     LEFT_ROUNDS.forEach((r, i) => placeColumn("L", r, i));
     RIGHT_ROUNDS.forEach((r, i) => placeColumn("R", r, i));
     placeColumn("C", FINAL_ROUND, 0);
 
-    // Relax inward rounds so they center between their feeders
     for (let pass = 0; pass < 6; pass++) {
       for (const m of rawMatches) {
         const destId = m.NextMatchID;
@@ -376,9 +362,7 @@
       row.appendChild(score);
 
       if (!isRealTeam(teamName)) row.classList.add("disabled");
-
       if (actualWin && teamName === actualWin) row.classList.add("win");
-
       if (pick && teamName === pick) row.classList.add("picked");
       if (pick && teamName !== pick && isRealTeam(teamName)) row.classList.add("loser");
 
@@ -417,7 +401,6 @@
       if (!col) continue;
 
       const card = renderMatchCard(m);
-
       const p = pos.get(m.MatchID) || { x: 0, y: 0 };
       card.style.top = `${Math.max(0, p.y)}px`;
 
@@ -515,7 +498,10 @@
 
   function renderAll() {
     renderBracket();
-    requestAnimationFrame(() => drawLines());
+    requestAnimationFrame(() => {
+      drawLines();
+      fitZoom(); // CHANGED: always fit after render
+    });
   }
 
   // =========================
@@ -603,7 +589,11 @@
     els.zoomOut.addEventListener("click", () => setZoom(zoom - 0.1));
     els.zoomFit.addEventListener("click", () => fitZoom());
 
-    window.addEventListener("resize", () => drawLines());
+    // CHANGED: always refit on resize (and redraw lines)
+    window.addEventListener("resize", () => {
+      fitZoom();
+      drawLines();
+    });
 
     try {
       await refreshAll();
