@@ -67,14 +67,19 @@
     return t !== "" && t.toUpperCase() !== "TBD";
   }
 
+  // CHANGED: fixture considered completed if Winner is set to a real team name
+  function isCompletedMatch(m) {
+    const w = norm(m?.Winner);
+    return isRealTeam(w);
+  }
+
   function setZoom(z) {
     zoom = Math.max(0.35, Math.min(1.6, z));
     els.wrap.style.transform = `scale(${zoom})`;
     drawLines();
-    sizeViewportToContent(); // CHANGED: remove empty space
+    sizeViewportToContent();
   }
 
-  // Fit bracket to BOTH width + height, always
   function fitZoom() {
     const vp = els.viewport.getBoundingClientRect();
     const wr = els.wrap.getBoundingClientRect();
@@ -90,20 +95,11 @@
     setZoom(target);
   }
 
-  // CHANGED: shrink the stage/viewport to the bracket’s scaled height (no dead space)
   function sizeViewportToContent() {
     const wr = els.wrap.getBoundingClientRect();
-
-    // wr.height is already scaled (because transform). Use it directly for visual height.
     const scaledH = Math.ceil(wr.height);
-
-    // A little breathing room for borders/padding
     const pad = 24;
-
-    // Set viewport height so it hugs the bracket
     els.viewport.style.height = `${Math.max(220, scaledH + pad)}px`;
-
-    // Stage height wraps viewport (stage has its own padding already)
     els.stage.style.height = "auto";
   }
 
@@ -249,6 +245,9 @@
     const m = matchById.get(matchId);
     if (!m) return;
 
+    // CHANGED: block selecting completed fixtures
+    if (isCompletedMatch(m)) return;
+
     const teams = slotTeam.get(matchId);
     if (!teams) return;
 
@@ -343,6 +342,7 @@
     const bName = norm(teams.B) || "TBD";
 
     const actualWin = norm(m.Winner);
+    const completed = isCompletedMatch(m); // CHANGED
 
     const el = document.createElement("div");
     el.className = "match";
@@ -377,13 +377,19 @@
       row.appendChild(name);
       row.appendChild(score);
 
-      if (!isRealTeam(teamName)) row.classList.add("disabled");
+      // Disable click if TBD/empty OR match is completed
+      if (!isRealTeam(teamName) || completed) row.classList.add("disabled");
+
+      // Actual winner highlight
       if (actualWin && teamName === actualWin) row.classList.add("win");
+
+      // User pick highlight (only meaningful if not completed, but harmless)
       if (pick && teamName === pick) row.classList.add("picked");
       if (pick && teamName !== pick && isRealTeam(teamName)) row.classList.add("loser");
 
       row.addEventListener("click", () => {
         if (!isRealTeam(teamName)) return;
+        if (completed) return; // CHANGED: hard block
         setPick(m.MatchID, teamName);
       });
     }
@@ -431,14 +437,13 @@
     const wrapRect = els.wrap.getBoundingClientRect();
     const svg = els.lines;
 
-    // Size SVG to unscaled coords so paths match anchors
     const unscaledW = Math.ceil(wrapRect.width / zoom);
     const unscaledH = Math.ceil(wrapRect.height / zoom);
     svg.setAttribute("width", String(unscaledW));
     svg.setAttribute("height", String(unscaledH));
     svg.setAttribute("viewBox", `0 0 ${unscaledW} ${unscaledH}`);
 
-    function rowEdge(matchId, slot, edge /* "left"|"right" */) {
+    function rowEdge(matchId, slot, edge) {
       const card = matchElById.get(matchId);
       if (!card) return null;
       const row = card.querySelector(`.teamrow[data-slot="${slot}"]`);
@@ -454,14 +459,10 @@
     }
 
     function matchOutputAnchor(m) {
-      // Winner output edge depends on side:
-      // L feeds to the right, R feeds to the left
       const outEdge = (m.Side === "R") ? "left" : "right";
-
       const a = rowEdge(m.MatchID, "A", outEdge);
       const b = rowEdge(m.MatchID, "B", outEdge);
       if (!a || !b) return null;
-
       return { x: (outEdge === "right" ? Math.max(a.x, b.x) : Math.min(a.x, b.x)), y: (a.y + b.y) / 2 };
     }
 
@@ -469,10 +470,6 @@
       const destM = matchById.get(destId);
       if (!destM) return null;
 
-      // Input edge depends on destination:
-      // L matches receive from left, so connect to LEFT edge.
-      // R matches receive from right, so connect to RIGHT edge.
-      // Center receives from both: connect from L -> left edge, from R -> right edge.
       let inEdge = "left";
       if (destM.Side === "R") inEdge = "right";
       if (destM.Side === "C") inEdge = (sourceMatch.Side === "R") ? "right" : "left";
@@ -527,8 +524,8 @@
     renderBracket();
     requestAnimationFrame(() => {
       drawLines();
-      fitZoom();              // keep it fitting
-      sizeViewportToContent(); // and remove dead space
+      fitZoom();
+      sizeViewportToContent();
     });
   }
 
@@ -540,6 +537,9 @@
     const picks = [];
 
     for (const m of rawMatches) {
+      // CHANGED: also don't include completed fixtures in the submit payload
+      if (isCompletedMatch(m)) continue;
+
       const pick = predictedWinnerById.get(m.MatchID);
       if (!pick) continue;
 
