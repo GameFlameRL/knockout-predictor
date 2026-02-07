@@ -7,10 +7,7 @@
   const MATCHES_TAB = "Matches";
 
   // Your Apps Script web app URL (for submit + leaderboard + optional sync)
-  // If you don’t use Apps Script for leaderboard yet, it’ll just show “No entries yet.”
   const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbywemgGWVB87gFdGZGax7mbJ8U6cIoVxI0pYBJMz-Da66SR_qhknP2ogOISs1WtbGjbbg/exec";
-
-  const MATCHES_URL = `https://opensheet.elk.sh/${SHEET_ID}/${encodeURIComponent(MATCHES_TAB)}`;
 
   // Round order for YOUR format (Play-In separate, mirrored triangles)
   const LEFT_ROUNDS = ["Play-In", "R16", "Quarter", "Semi"];
@@ -87,20 +84,51 @@
   }
 
   // =========================
-  // FETCH
+  // FETCH (GViz instead of OpenSheet)
   // =========================
   async function loadMatches() {
-    const url = `${MATCHES_URL}?t=${Date.now()}`;
+    // GViz endpoint (more reliable than opensheet.elk.sh)
+    const url =
+      `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq` +
+      `?tqx=out:json&sheet=${encodeURIComponent(MATCHES_TAB)}&t=${Date.now()}`;
+
     const r = await fetch(url);
     if (!r.ok) throw new Error(`Matches fetch failed: HTTP ${r.status}`);
-    const data = await r.json();
-    return Array.isArray(data) ? data : [];
+
+    const text = await r.text();
+
+    // gviz returns: google.visualization.Query.setResponse({...});
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start === -1 || end === -1) {
+      throw new Error("Matches fetch failed: GViz returned unexpected response. Check sheet access.");
+    }
+
+    const json = JSON.parse(text.slice(start, end + 1));
+    const table = json?.table;
+    const cols = (table?.cols || []).map(c => norm(c.label || c.id));
+    const rows = table?.rows || [];
+
+    // Convert to array of objects using header labels
+    const out = rows.map((rw) => {
+      const obj = {};
+      const cells = rw.c || [];
+      for (let i = 0; i < cols.length; i++) {
+        const key = cols[i] || `col${i}`;
+        obj[key] = cells[i]?.v ?? "";
+      }
+      return obj;
+    });
+
+    // If headers are blank, you’ll end up with col0/col1...
+    // Your Matches sheet should have header row like:
+    // MatchID, Round, TeamA, TeamB, Winner, NextMatchID, NextSlot, Side, SeedY
+    return Array.isArray(out) ? out : [];
   }
 
   async function loadLeaderboard() {
-    // This expects your Apps Script to return:
+    // Expects Apps Script to return:
     // [{ Username: "name", Points: "12" }, ...]
-    // If yours differs, adjust parse below.
     try {
       const u = `${SCRIPT_URL}?action=leaderboard&t=${Date.now()}`;
       const r = await fetch(u);
@@ -114,7 +142,6 @@
 
   // Optional: sync winners from sheet (if you implement it server-side)
   async function syncBracket() {
-    // This button is safe even if your Apps Script doesn’t support it.
     try {
       const u = `${SCRIPT_URL}?action=sync&t=${Date.now()}`;
       await fetch(u);
@@ -257,7 +284,7 @@
     const pos = new Map();
 
     // Helper: place a column’s matches by (seedY) baseline
-    function placeColumn(side, round, colIndex, isRightMirror) {
+    function placeColumn(side, round, colIndex) {
       const key = `${side}|${round}`;
       const ms = groups.get(key) || [];
       // tighter as we move inward
@@ -271,40 +298,26 @@
         const y = COL_PAD_TOP + (seed - 1) * (CARD_H + gap);
         pos.set(m.MatchID, { x: 0, y });
       }
-      return { gap, count: ms.length };
     }
 
     // Baseline placement for outer columns
-    // Left: Play-In colIndex 0, R16 1, Quarter 2, Semi 3
-    LEFT_ROUNDS.forEach((r, i) => placeColumn("L", r, i, false));
-    // Right: Play-In is visually last (colIndex 3 baseline), but we compute by its inward distance:
-    // We want right triangle to have same density, so use mirrored index mapping:
-    // Right body columns are [Semi(0), Quarter(1), R16(2), Play-In(3)] visually
-    RIGHT_ROUNDS.forEach((r, i) => placeColumn("R", r, i, true));
-    // Center Final baseline
-    placeColumn("C", FINAL_ROUND, 0, false);
+    LEFT_ROUNDS.forEach((r, i) => placeColumn("L", r, i));
+    RIGHT_ROUNDS.forEach((r, i) => placeColumn("R", r, i));
+    placeColumn("C", FINAL_ROUND, 0);
 
-    // Now refine inward rounds so they center between their feeders (triangle look)
-    // We do a few relaxation passes.
+    // Relax inward rounds so they center between their feeders
     for (let pass = 0; pass < 6; pass++) {
       for (const m of rawMatches) {
         const destId = m.NextMatchID;
         const dest = destId ? matchById.get(destId) : null;
         if (!dest) continue;
 
-        const a = pos.get(m.MatchID);
-        const b = pos.get(destId);
-        if (!a || !b) continue;
-
-        // We want dest centered on its feeders.
         const feeders = sourcesFeeding(destId).map(x => pos.get(x.MatchID)).filter(Boolean);
         if (feeders.length >= 2) {
           const ys = feeders.map(p => p.y);
           const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
           const current = pos.get(destId);
-          if (current) {
-            pos.set(destId, { ...current, y: centerY });
-          }
+          if (current) pos.set(destId, { ...current, y: centerY });
         }
       }
     }
@@ -346,7 +359,9 @@
     function buildRow(row, teamName) {
       const logo = document.createElement("div");
       logo.className = "logoBox";
-      logo.textContent = teamName && teamName !== "TBD" ? teamName.split(" ").map(w => w[0]).join("").slice(0,2).toUpperCase() : "";
+      logo.textContent = teamName && teamName !== "TBD"
+        ? teamName.split(" ").map(w => w[0]).join("").slice(0,2).toUpperCase()
+        : "";
 
       const name = document.createElement("div");
       name.className = "nameBox";
@@ -354,20 +369,16 @@
 
       const score = document.createElement("div");
       score.className = "scoreBox";
-      // No scores in predictor mode; keep blank
       score.textContent = "";
 
       row.appendChild(logo);
       row.appendChild(name);
       row.appendChild(score);
 
-      // Disable click if TBD/empty
       if (!isRealTeam(teamName)) row.classList.add("disabled");
 
-      // Actual winner highlight
       if (actualWin && teamName === actualWin) row.classList.add("win");
 
-      // User pick highlight
       if (pick && teamName === pick) row.classList.add("picked");
       if (pick && teamName !== pick && isRealTeam(teamName)) row.classList.add("loser");
 
@@ -389,29 +400,18 @@
   function renderBracket() {
     clearColumns();
 
-    // Group by side/round
     const groups = groupBySideRound();
     const pos = computePositions(groups);
 
-    // Render matches into correct columns based on Side+Round
     for (const m of rawMatches) {
-      let colSide = m.Side;
-      let colRound = m.Round;
+      const colSide = m.Side;
+      const colRound = m.Round;
 
-      // Only render the rounds we care about
       const isLeft = colSide === "L" && LEFT_ROUNDS.includes(colRound);
-      const isRight = colSide === "R" && ["Play-In","R16","Quarter","Semi"].includes(colRound); // data uses normal names
+      const isRight = colSide === "R" && ["Play-In","R16","Quarter","Semi"].includes(colRound);
       const isCenter = colSide === "C" && colRound === FINAL_ROUND;
 
       if (!isLeft && !isRight && !isCenter) continue;
-
-      // Right side is displayed reversed; map normal round -> displayed column round
-      if (colSide === "R") {
-        // data round is "Play-In","R16","Quarter","Semi"
-        // but our right DOM columns are [Semi, Quarter, R16, Play-In]
-        // we can keep round as-is because DOM has those in that order already via data-round.
-        // For right, we *do* have columns for those rounds (see index.html): Semi,Quarter,R16,Play-In
-      }
 
       const col = getColumnEl(colSide, colRound);
       if (!col) continue;
@@ -427,10 +427,8 @@
   }
 
   function drawLines() {
-    // Clear SVG
     while (els.lines.firstChild) els.lines.removeChild(els.lines.firstChild);
 
-    // Ensure SVG covers the wrap content
     const wrapRect = els.wrap.getBoundingClientRect();
     const svg = els.lines;
     svg.setAttribute("width", String(els.wrap.scrollWidth || wrapRect.width));
@@ -445,7 +443,6 @@
       const rowRect = row.getBoundingClientRect();
       const wrapR = els.wrap.getBoundingClientRect();
 
-      // Anchor at the right edge middle of row
       const x = (rowRect.right - wrapR.left) / zoom;
       const y = (rowRect.top - wrapR.top + rowRect.height / 2) / zoom;
       return { x, y };
@@ -465,15 +462,12 @@
       return { x, y };
     }
 
-    // Draw each connection based on NextMatchID/NextSlot
     for (const m of rawMatches) {
       if (!m.NextMatchID || !m.NextSlot) continue;
 
       const destId = m.NextMatchID;
       const destSlot = m.NextSlot;
 
-      // Source is always the "winner output" of this match:
-      // Use the center between its two rows at right edge.
       const aOut = anchorFor(m.MatchID, "A");
       const bOut = anchorFor(m.MatchID, "B");
       if (!aOut || !bOut) continue;
@@ -481,22 +475,18 @@
       const x1 = Math.max(aOut.x, bOut.x);
       const y1 = (aOut.y + bOut.y) / 2;
 
-      // Destination slot anchor: left edge of that slot row
       const dest = anchorLeftEdge(destId, destSlot);
       if (!dest) continue;
 
       const x2 = dest.x;
       const y2 = dest.y;
 
-      // Orthogonal-ish path for clean bracket look
       const midX = (x1 + x2) / 2;
 
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("fill", "none");
       path.setAttribute("stroke", "rgba(0,0,0,0.55)");
       path.setAttribute("stroke-width", "2");
-
-      // M x1,y1 -> H midX -> V y2 -> H x2
       path.setAttribute("d", `M ${x1} ${y1} H ${midX} V ${y2} H ${x2}`);
 
       svg.appendChild(path);
@@ -525,7 +515,6 @@
 
   function renderAll() {
     renderBracket();
-    // Give layout a beat to hit DOM before drawing lines
     requestAnimationFrame(() => drawLines());
   }
 
@@ -533,8 +522,6 @@
   // SUBMIT PREDICTIONS
   // =========================
   function buildPicksPayload() {
-    // Payload shape is intentionally simple.
-    // Apps Script can map it however you want.
     const name = norm(els.username.value);
     const picks = [];
 
@@ -542,7 +529,6 @@
       const pick = predictedWinnerById.get(m.MatchID);
       if (!pick) continue;
 
-      // only include if both teams are real
       const s = slotTeam.get(m.MatchID);
       if (!s) continue;
       if (!isRealTeam(s.A) || !isRealTeam(s.B)) continue;
@@ -590,10 +576,7 @@
     const matches = await loadMatches();
     indexMatches(matches);
 
-    // Start from sheet base teams
     initSlotsFromSheet();
-
-    // Re-apply any saved predictions (if you want persistence later)
     applyPredictionsForward();
 
     renderAll();
@@ -605,14 +588,12 @@
   }
 
   async function boot() {
-    // Wire buttons
     els.refreshBtn.addEventListener("click", async () => {
       try { await refreshAll(); } catch (e) { console.error(e); alert(e.message); }
     });
 
     els.syncBtn.addEventListener("click", async () => {
       await syncBracket();
-      // reload after sync
       try { await refreshAll(); } catch (e) { console.error(e); }
     });
 
@@ -624,11 +605,9 @@
 
     window.addEventListener("resize", () => drawLines());
 
-    // Initial load
     try {
       await refreshAll();
       await refreshLeaderboardOnly();
-      // Fit after first render
       setTimeout(() => fitZoom(), 50);
     } catch (e) {
       console.error(e);
