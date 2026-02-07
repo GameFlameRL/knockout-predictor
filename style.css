@@ -16,12 +16,12 @@
 
   --line: rgba(0,0,0,0.55);
 
-  /* === BRACKET GEOMETRY (FIXES OVERLAP) === */
-  --colGap: 14px;        /* gap between round columns */
-  --colW: 320px;         /* width of each round column (>= card width) */
-  --cardW: 300px;        /* match card width */
-  --centerW: 360px;      /* center block width */
-  --centerCardW: 320px;  /* final match card width */
+  /* === BRACKET GEOMETRY === */
+  --colGap: 14px;
+  --colW: 320px;
+  --cardW: 300px;
+  --centerW: 360px;
+  --centerCardW: 320px;
 }
 
 *{ box-sizing:border-box; }
@@ -98,13 +98,11 @@ body{
   text-align:center;
 }
 
+/* CHANGED: leaderboard goes underneath */
 .layout{
-  display:grid;
-  grid-template-columns: 1fr 360px;
+  display:flex;
+  flex-direction: column;
   gap: 14px;
-}
-@media (max-width: 980px){
-  .layout{ grid-template-columns: 1fr; }
 }
 
 .stage{
@@ -145,19 +143,17 @@ body{
   align-items:flex-start;
 }
 
-/* CHANGED: half is now wide enough for 4 full columns */
+/* Each half must be wide enough for 4 full columns */
 .half{
   width: calc((4 * var(--colW)) + (3 * var(--colGap)));
   position: relative;
 }
 
-/* CHANGED: center uses variable */
 .center{
   width: var(--centerW);
   position: relative;
 }
 
-/* CHANGED: header columns match body columns */
 .half-header{
   display:grid;
   grid-template-columns: repeat(4, var(--colW));
@@ -179,7 +175,6 @@ body{
   font-size: 14px;
 }
 
-/* CHANGED: body columns are fixed-width so cards can't overlap */
 .half-body{
   position: relative;
   display:grid;
@@ -193,7 +188,6 @@ body{
   min-height: 600px;
 }
 
-/* CHANGED: round columns have real width */
 .round-col{
   position: relative;
   min-height: 600px;
@@ -204,7 +198,6 @@ body{
   width: var(--centerW);
 }
 
-/* CHANGED: card width uses variable */
 .match{
   width: var(--cardW);
   border: 2px solid rgba(255,255,255,0.30);
@@ -215,7 +208,6 @@ body{
   transform: translateX(-50%);
 }
 
-/* CHANGED: final card uses variable */
 .center .match{
   width: var(--centerCardW);
 }
@@ -232,7 +224,6 @@ body{
 }
 
 .teamrow:last-child{ border-bottom: none; }
-
 .teamrow:hover{ filter: brightness(1.10); }
 
 .logoBox{
@@ -300,12 +291,13 @@ body{
 }
 .teamrow.disabled:hover{ filter:none; }
 
+/* CHANGED: leaderboard underneath, full-width, no fixed height */
 .side{
   border-radius: 12px;
   padding: 14px;
   background: rgba(0,0,0,0.12);
-  height: 680px;
-  overflow: auto;
+  height: auto;
+  overflow: visible;
 }
 
 .side h2{
