@@ -141,6 +141,8 @@
   }
 
   async function loadLeaderboard() {
+    // NOTE: your Apps Script doGet() returns "OK" only, so this will always show "No entries yet."
+    // If you want leaderboard, you need to implement doGet?action=leaderboard server-side.
     try {
       const u = `${SCRIPT_URL}?action=leaderboard&t=${Date.now()}`;
       const r = await fetch(u);
@@ -527,15 +529,13 @@
   }
 
   // =========================
-  // SUBMIT / ENTER RESULTS (FIXED)
+  // SUBMIT PREDICTIONS (MATCHES YOUR APPS SCRIPT)
   // =========================
-
-  function buildPicksPayload() {
+  function buildPicksPayloadRows() {
     const name = norm(els.username.value);
-    const picks = [];
+    const rows = [];
 
     for (const m of rawMatches) {
-      // don't submit completed fixtures
       if (isCompletedMatch(m)) continue;
 
       const pick = predictedWinnerById.get(m.MatchID);
@@ -545,44 +545,24 @@
       if (!s) continue;
       if (!isRealTeam(s.A) || !isRealTeam(s.B)) continue;
 
-      picks.push({
-        MatchID: m.MatchID,
-        Round: m.Round,
-        Side: m.Side,
-        TeamA: norm(s.A),
-        TeamB: norm(s.B),
-        Pick: pick,
-      });
+      const ts = new Date().toISOString();
+      rows.push([ts, name, String(m.MatchID), pick]);
     }
 
-    return { Username: name, Picks: picks };
+    return rows;
   }
 
-  // CHANGED: Apps Script often expects form fields, not JSON.
-  // This uses application/x-www-form-urlencoded (no preflight) and sends BOTH:
-  // - Username
-  // - PicksJson (string)
-  // - action
-  async function postToAppsScript(action, payloadObj) {
-    const params = new URLSearchParams();
-    params.set("action", action);
-
-    // Common field names scripts look for:
-    if (payloadObj?.Username) params.set("Username", payloadObj.Username);
-
-    // Send the full payload as JSON string too (easy for Apps Script to parse)
-    params.set("PayloadJson", JSON.stringify(payloadObj));
-    params.set("PicksJson", JSON.stringify(payloadObj?.Picks || []));
-
+  async function appendPredictionRow(row) {
     const r = await fetch(SCRIPT_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-      body: params.toString(),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "appendPrediction", row }),
     });
 
-    // Even if your script returns plain text, we can show it
     const text = await r.text().catch(() => "");
-    return { ok: r.ok, status: r.status, text };
+    if (!r.ok || norm(text) !== "OK") {
+      throw new Error(`Apps Script rejected row. HTTP ${r.status}. Response: ${text || "(empty)"}`);
+    }
   }
 
   async function submitPredictions() {
@@ -592,27 +572,22 @@
       return;
     }
 
-    const payload = buildPicksPayload();
+    const rows = buildPicksPayloadRows();
+    if (rows.length === 0) {
+      alert("No picks to submit (or all remaining fixtures are completed).");
+      return;
+    }
 
     try {
-      const res = await postToAppsScript("submitPredictions", payload);
-
-      if (!res.ok) {
-        // Show the real reason (status + response), not the generic message
-        alert(`Submit failed (HTTP ${res.status}).\n\n${res.text || "No response body from Apps Script."}`);
-        return;
+      // Sequential to avoid Apps Script rate limits
+      for (const row of rows) {
+        await appendPredictionRow(row);
       }
 
-      // If your script returns JSON, cool. If not, still show success.
-      alert("Submitted!");
+      alert(`Submitted ${rows.length} pick(s) to the Predictions sheet.`);
       await refreshLeaderboardOnly();
     } catch (e) {
-      // This catches network/CORS issues
-      alert(
-        "Submit failed due to a network/CORS error.\n\n" +
-        "If you can open your Apps Script URL directly in a browser but POST fails from GitHub Pages, your Apps Script must return CORS headers.\n\n" +
-        `Error: ${e?.message || e}`
-      );
+      alert(`Submit failed.\n\n${e?.message || e}`);
       console.error(e);
     }
   }
