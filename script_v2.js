@@ -6,7 +6,7 @@
   const SHEET_ID = "1ilDa0ZleooN3OBruvtOqF9Ym1CitowFjaLCk1GiYiNc";
   const MATCHES_TAB = "Matches";
 
-  // Your Apps Script web app URL (for submit + leaderboard + optional sync)
+  // Your Apps Script web app URL
   const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbywemgGWVB87gFdGZGax7mbJ8U6cIoVxI0pYBJMz-Da66SR_qhknP2ogOISs1WtbGjbbg/exec";
 
   // Round order for YOUR format (Play-In separate, mirrored triangles)
@@ -27,6 +27,9 @@
   let matchById = new Map();
 
   // predictedWinnerById: matchId -> teamName
+  // Used for BOTH:
+  // - Predictions (Submit Predictions)
+  // - Results entry (Submit Results) for matches you have clicked
   let predictedWinnerById = new Map();
 
   // slotTeam[matchId] = { A: teamName, B: teamName }
@@ -41,6 +44,7 @@
     leaderboard: document.getElementById("leaderboard"),
     username: document.getElementById("username"),
     submitBtn: document.getElementById("submitBtn"),
+    submitResultsBtn: document.getElementById("submitResultsBtn"),
     refreshBtn: document.getElementById("refreshBtn"),
     syncBtn: document.getElementById("syncBtn"),
     zoomIn: document.getElementById("zoomIn"),
@@ -141,7 +145,7 @@
   }
 
   async function loadLeaderboard() {
-    // Your Apps Script doGet() returns "OK", so this will always fall back to "No entries yet."
+    // Your Apps Script doGet() returns "OK" unless you add a leaderboard action server-side.
     try {
       const u = `${SCRIPT_URL}?action=leaderboard&t=${Date.now()}`;
       const r = await fetch(u);
@@ -246,7 +250,7 @@
     const m = matchById.get(matchId);
     if (!m) return;
 
-    // Block selecting completed fixtures
+    // Block selecting completed fixtures (your request)
     if (isCompletedMatch(m)) return;
 
     const teams = slotTeam.get(matchId);
@@ -528,7 +532,24 @@
   }
 
   // =========================
-  // SUBMIT PREDICTIONS (FORM POST to avoid CORS preflight)
+  // POST HELPERS (FORM, no preflight)
+  // =========================
+  async function postForm(paramsObj) {
+    const params = new URLSearchParams();
+    Object.entries(paramsObj).forEach(([k, v]) => params.set(k, String(v)));
+
+    const r = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: params.toString(),
+    });
+
+    const text = await r.text().catch(() => "");
+    return { ok: r.ok, status: r.status, text };
+  }
+
+  // =========================
+  // SUBMIT PREDICTIONS (Predictions tab)
   // =========================
   function buildPredictionRows() {
     const name = norm(els.username.value);
@@ -551,23 +572,6 @@
     return rows;
   }
 
-  async function appendPredictionRowForm(row) {
-    const params = new URLSearchParams();
-    params.set("type", "appendPrediction");
-    params.set("rowJson", JSON.stringify(row));
-
-    const r = await fetch(SCRIPT_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-      body: params.toString(),
-    });
-
-    const text = await r.text().catch(() => "");
-    if (!r.ok || norm(text) !== "OK") {
-      throw new Error(`Apps Script rejected row. HTTP ${r.status}. Response: ${text || "(empty)"}`);
-    }
-  }
-
   async function submitPredictions() {
     const name = norm(els.username.value);
     if (!name) {
@@ -582,16 +586,84 @@
     }
 
     try {
-      // Sequential avoids rate-limit / concurrency weirdness
       for (const row of rows) {
-        await appendPredictionRowForm(row);
+        const res = await postForm({
+          type: "appendPrediction",
+          rowJson: JSON.stringify(row),
+        });
+
+        if (!res.ok || norm(res.text) !== "OK") {
+          throw new Error(`Apps Script rejected a prediction row (HTTP ${res.status}).\n\n${res.text || "(empty response)"}`);
+        }
       }
 
-      alert(`Submitted ${rows.length} pick(s) to the Predictions sheet.`);
+      alert(`Submitted ${rows.length} prediction(s) to the Predictions sheet.`);
       await refreshLeaderboardOnly();
     } catch (e) {
-      // If this fires again, it will now show HTTP + response text (or network error)
-      alert(`Submit failed.\n\n${e?.message || e}`);
+      alert(`Submit predictions failed.\n\n${e?.message || e}`);
+      console.error(e);
+    }
+  }
+
+  // =========================
+  // SUBMIT RESULTS (Matches!Winner)
+  // =========================
+  function buildResultUpdates() {
+    const updates = [];
+
+    for (const m of rawMatches) {
+      if (isCompletedMatch(m)) continue; // don't overwrite completed
+      const winner = predictedWinnerById.get(m.MatchID);
+      if (!winner) continue;
+
+      const s = slotTeam.get(m.MatchID);
+      if (!s) continue;
+
+      const a = norm(s.A);
+      const b = norm(s.B);
+
+      // Only allow winner that matches TeamA/TeamB
+      if (!isRealTeam(a) || !isRealTeam(b)) continue;
+      if (winner !== a && winner !== b) continue;
+
+      updates.push({ matchId: String(m.MatchID), winner });
+    }
+
+    return updates;
+  }
+
+  async function submitResults() {
+    const updates = buildResultUpdates();
+
+    if (updates.length === 0) {
+      alert("No results to submit.\n\nClick a winner on any NOT-completed match first, then press Submit Results.");
+      return;
+    }
+
+    // Safety confirmation
+    const ok = confirm(
+      `This will write ${updates.length} winner(s) into Matches!Winner.\n\n` +
+      `Are you sure you want to submit results?`
+    );
+    if (!ok) return;
+
+    try {
+      for (const u of updates) {
+        const res = await postForm({
+          type: "setMatchWinner",
+          matchId: u.matchId,
+          winner: u.winner,
+        });
+
+        if (!res.ok || norm(res.text) !== "OK") {
+          throw new Error(`Apps Script rejected a result (MatchID ${u.matchId}) (HTTP ${res.status}).\n\n${res.text || "(empty response)"}`);
+        }
+      }
+
+      alert(`Submitted ${updates.length} result(s) to Matches!Winner.`);
+      await refreshAll(); // pull winners back in + lock those fixtures
+    } catch (e) {
+      alert(`Submit results failed.\n\n${e?.message || e}`);
       console.error(e);
     }
   }
@@ -625,6 +697,7 @@
     });
 
     els.submitBtn.addEventListener("click", submitPredictions);
+    els.submitResultsBtn.addEventListener("click", submitResults);
 
     els.zoomIn.addEventListener("click", () => setZoom(zoom + 0.1));
     els.zoomOut.addEventListener("click", () => setZoom(zoom - 0.1));
