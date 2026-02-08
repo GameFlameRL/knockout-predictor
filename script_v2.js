@@ -1,21 +1,24 @@
 // script_v2.js
 (() => {
   // =========================
-  // CONFIG
+  // CONFIG (edit these only)
   // =========================
   const SHEET_ID = "1ilDa0ZleooN3OBruvtOqF9Ym1CitowFjaLCk1GiYiNc";
   const MATCHES_TAB = "Matches";
 
+  // Your Apps Script web app URL
   const SCRIPT_URL =
     "https://script.google.com/macros/s/AKfycbywemgGWVB87gFdGZGax7mbJ8U6cIoVxI0pYBJMz-Da66SR_qhknP2ogOISs1WtbGjbbg/exec";
 
+  // Round order for YOUR format (Play-In separate, mirrored triangles)
   const LEFT_ROUNDS = ["Play-In", "R16", "Quarter", "Semi"];
-  const RIGHT_ROUNDS = ["Semi", "Quarter", "R16", "Play-In"];
+  const RIGHT_ROUNDS = ["Semi", "Quarter", "R16", "Play-In"]; // mirrored visually
   const FINAL_ROUND = "Final";
 
-  const CARD_H = 88;
-  const V_GAP0 = 18;
-  const V_GAP_MIN = 10;
+  // Layout sizing (dense)
+  const CARD_H = 88; // 2 rows x 44px
+  const V_GAP0 = 18; // base vertical gap for first column
+  const V_GAP_MIN = 10; // minimum gap as rounds get tighter
   const COL_PAD_TOP = 4;
 
   // =========================
@@ -23,11 +26,13 @@
   // =========================
   let rawMatches = [];
   let matchById = new Map();
+
+  // Used for BOTH predictions + results selection
   let predictedWinnerById = new Map();
   let slotTeam = new Map();
 
   // =========================
-  // DOM
+  // DOM refs
   // =========================
   const els = {
     stage: document.querySelector(".stage"),
@@ -48,20 +53,36 @@
   let zoom = 1;
   const matchElById = new Map();
 
+  // =========================
+  // DEBUG SAFETY NET (so clicks don't silently do nothing)
+  // =========================
   window.addEventListener("error", (e) => {
     console.error("JS error:", e?.error || e);
-    alert("JS error. Open DevTools → Console.\n\n" + (e?.message || "Unknown"));
+    alert(
+      "A JS error stopped the page.\n\nOpen DevTools → Console to see it.\n\n" +
+        (e?.message || "Unknown error")
+    );
   });
 
   function assertEls() {
-    const missing = Object.entries(els).filter(([_, v]) => !v).map(([k]) => k);
+    const missing = Object.entries(els)
+      .filter(([_, v]) => !v)
+      .map(([k]) => k);
     if (missing.length) {
-      alert("Missing DOM elements:\n" + missing.join(", "));
+      alert(
+        "Your page is missing required elements, so buttons won't work.\n\nMissing: " +
+          missing.join(", ") +
+          "\n\nThis usually means index.html didn't update or script is cached."
+      );
+      console.error("Missing elements:", missing);
       return false;
     }
     return true;
   }
 
+  // =========================
+  // HELPERS
+  // =========================
   const norm = (v) => (v ?? "").toString().trim();
   const toInt = (v) => {
     const n = parseInt(norm(v), 10);
@@ -70,15 +91,46 @@
 
   function isRealTeam(name) {
     const t = norm(name);
-    return t && t.toUpperCase() !== "TBD";
+    return t !== "" && t.toUpperCase() !== "TBD";
   }
 
   function isCompletedMatch(m) {
-    return isRealTeam(m?.Winner);
+    const w = norm(m?.Winner);
+    return isRealTeam(w);
+  }
+
+  function setZoom(z) {
+    zoom = Math.max(0.35, Math.min(1.6, z));
+    els.wrap.style.transform = `scale(${zoom})`;
+    drawLines();
+    sizeViewportToContent();
+  }
+
+  function fitZoom() {
+    const vp = els.viewport.getBoundingClientRect();
+    const wr = els.wrap.getBoundingClientRect();
+
+    const contentW = wr.width / zoom || els.wrap.scrollWidth || 1;
+    const contentH = wr.height / zoom || els.wrap.scrollHeight || 1;
+
+    const pad = 24;
+    const zW = (vp.width - pad) / contentW;
+    const zH = (vp.height - pad) / contentH;
+
+    const target = Math.max(0.35, Math.min(1.2, Math.min(zW, zH)));
+    setZoom(target);
+  }
+
+  function sizeViewportToContent() {
+    const wr = els.wrap.getBoundingClientRect();
+    const scaledH = Math.ceil(wr.height);
+    const pad = 24;
+    els.viewport.style.height = `${Math.max(220, scaledH + pad)}px`;
+    els.stage.style.height = "auto";
   }
 
   // =========================
-  // FETCH MATCHES
+  // FETCH (GViz)
   // =========================
   async function loadMatches() {
     const url =
@@ -86,80 +138,445 @@
       `?tqx=out:json&sheet=${encodeURIComponent(MATCHES_TAB)}&t=${Date.now()}`;
 
     const r = await fetch(url);
-    const text = await r.text();
-    const json = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
-    const cols = json.table.cols.map(c => c.label);
-    const rows = json.table.rows;
+    if (!r.ok) throw new Error(`Matches fetch failed: HTTP ${r.status}`);
 
-    return rows.map(r => {
-      const o = {};
-      r.c.forEach((c, i) => o[cols[i]] = c?.v ?? "");
-      return o;
+    const text = await r.text();
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start === -1 || end === -1) {
+      throw new Error(
+        "Matches fetch failed: GViz returned unexpected response. Check sheet access."
+      );
+    }
+
+    const json = JSON.parse(text.slice(start, end + 1));
+    const table = json?.table;
+    const cols = (table?.cols || []).map((c) => norm(c.label || c.id));
+    const rows = table?.rows || [];
+
+    const out = rows.map((rw) => {
+      const obj = {};
+      const cells = rw.c || [];
+      for (let i = 0; i < cols.length; i++) {
+        const key = cols[i] || `col${i}`;
+        obj[key] = cells[i]?.v ?? "";
+      }
+      return obj;
     });
+
+    return Array.isArray(out) ? out : [];
   }
 
-  function indexMatches(data) {
-    rawMatches = data.map(row => ({
-      MatchID: toInt(row.MatchID),
-      Round: norm(row.Round),
-      TeamA: norm(row.TeamA),
-      TeamB: norm(row.TeamB),
-      Winner: norm(row.Winner),
-      NextMatchID: toInt(row.NextMatchID),
-      NextSlot: norm(row.NextSlot).toUpperCase(),
-      Side: norm(row.Side).toUpperCase(),
-      SeedY: toInt(row.SeedY) ?? 9999,
-    })).filter(m => m.MatchID !== null);
+  async function loadLeaderboard() {
+    // Your Apps Script doGet() returns "OK" unless you implement leaderboard server-side
+    try {
+      const u = `${SCRIPT_URL}?action=leaderboard&t=${Date.now()}`;
+      const r = await fetch(u);
+      if (!r.ok) throw new Error(`Leaderboard HTTP ${r.status}`);
+      const data = await r.json();
+      return Array.isArray(data) ? data : [];
+    } catch {
+      return [];
+    }
+  }
 
-    matchById = new Map(rawMatches.map(m => [m.MatchID, m]));
+  async function syncBracket() {
+    try {
+      const u = `${SCRIPT_URL}?action=sync&t=${Date.now()}`;
+      await fetch(u);
+    } catch {}
+  }
+
+  // =========================
+  // BUILD BRACKET MODEL
+  // =========================
+  function indexMatches(data) {
+    rawMatches = data
+      .map((row) => ({
+        MatchID: toInt(row.MatchID),
+        Round: norm(row.Round),
+        TeamA: norm(row.TeamA),
+        TeamB: norm(row.TeamB),
+        Winner: norm(row.Winner),
+        NextMatchID: toInt(row.NextMatchID),
+        NextSlot: norm(row.NextSlot).toUpperCase(),
+        Side: norm(row.Side).toUpperCase(),
+        SeedY: toInt(row.SeedY) ?? 9999,
+      }))
+      .filter((m) => m.MatchID !== null);
+
+    matchById = new Map(rawMatches.map((m) => [m.MatchID, m]));
   }
 
   function initSlotsFromSheet() {
-    slotTeam.clear();
-    rawMatches.forEach(m => {
-      slotTeam.set(m.MatchID, { A: m.TeamA || "TBD", B: m.TeamB || "TBD" });
-    });
+    slotTeam = new Map();
+    for (const m of rawMatches) {
+      slotTeam.set(m.MatchID, {
+        A: norm(m.TeamA) || "TBD",
+        B: norm(m.TeamB) || "TBD",
+      });
+    }
+  }
+
+  function sourcesFeeding(matchId) {
+    const out = [];
+    for (const m of rawMatches) {
+      if (
+        m.NextMatchID === matchId &&
+        (m.NextSlot === "A" || m.NextSlot === "B")
+      )
+        out.push(m);
+    }
+    return out;
   }
 
   function applyPredictionsForward() {
     initSlotsFromSheet();
-    let changed = true;
 
-    while (changed) {
+    let changed = true;
+    let guard = 0;
+
+    while (changed && guard < 50) {
       changed = false;
+      guard++;
+
       for (const m of rawMatches) {
         const pick = predictedWinnerById.get(m.MatchID);
-        if (!pick || !m.NextMatchID || !m.NextSlot) continue;
+        if (!pick) continue;
 
-        const dest = slotTeam.get(m.NextMatchID);
-        if (dest[m.NextSlot] !== pick) {
-          dest[m.NextSlot] = pick;
+        const destId = m.NextMatchID;
+        const destSlot = m.NextSlot;
+        if (!destId || !destSlot) continue;
+
+        const dest = slotTeam.get(destId);
+        if (!dest) continue;
+
+        if (dest[destSlot] !== pick) {
+          dest[destSlot] = pick;
+          slotTeam.set(destId, dest);
           changed = true;
         }
       }
     }
+
+    for (const m of rawMatches) {
+      const pick = predictedWinnerById.get(m.MatchID);
+      if (!pick) continue;
+      const s = slotTeam.get(m.MatchID);
+      if (!s) continue;
+      if (pick !== norm(s.A) && pick !== norm(s.B))
+        predictedWinnerById.delete(m.MatchID);
+    }
   }
 
-  function setPick(matchId, team) {
+  function setPick(matchId, teamName) {
     const m = matchById.get(matchId);
-    if (!m || isCompletedMatch(m)) return;
+    if (!m) return;
+    if (isCompletedMatch(m)) return;
 
-    const cur = predictedWinnerById.get(matchId);
-    cur === team
-      ? predictedWinnerById.delete(matchId)
-      : predictedWinnerById.set(matchId, team);
+    const teams = slotTeam.get(matchId);
+    if (!teams) return;
+
+    const a = norm(teams.A);
+    const b = norm(teams.B);
+
+    if (!isRealTeam(teamName)) return;
+    if (teamName !== a && teamName !== b) return;
+
+    const current = predictedWinnerById.get(matchId);
+    if (current === teamName) predictedWinnerById.delete(matchId);
+    else predictedWinnerById.set(matchId, teamName);
 
     applyPredictionsForward();
     renderAll();
   }
 
   // =========================
-  // POST (NO-CORS FIX)
+  // LAYOUT / RENDER
+  // =========================
+  function getColumnEl(side, round) {
+    return document.querySelector(
+      `.round-col[data-side="${side}"][data-round="${round}"]`
+    );
+  }
+
+  function groupBySideRound() {
+    const groups = new Map();
+    for (const m of rawMatches) {
+      const key = `${m.Side}|${m.Round}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(m);
+    }
+    for (const [k, arr] of groups) {
+      arr.sort((a, b) => (a.SeedY - b.SeedY) || (a.MatchID - b.MatchID));
+      groups.set(k, arr);
+    }
+    return groups;
+  }
+
+  function computePositions(groups) {
+    const pos = new Map();
+
+    function placeColumn(side, round, colIndex) {
+      const key = `${side}|${round}`;
+      const ms = groups.get(key) || [];
+      const t = Math.max(0, Math.min(3, colIndex));
+      const gap = Math.max(V_GAP_MIN, V_GAP0 - t * 3);
+
+      for (let i = 0; i < ms.length; i++) {
+        const m = ms[i];
+        const seed = m.SeedY && m.SeedY !== 9999 ? m.SeedY : i + 1;
+        const y = COL_PAD_TOP + (seed - 1) * (CARD_H + gap);
+        pos.set(m.MatchID, { x: 0, y });
+      }
+    }
+
+    LEFT_ROUNDS.forEach((r, i) => placeColumn("L", r, i));
+    RIGHT_ROUNDS.forEach((r, i) => placeColumn("R", r, i));
+    placeColumn("C", FINAL_ROUND, 0);
+
+    for (let pass = 0; pass < 6; pass++) {
+      for (const m of rawMatches) {
+        const destId = m.NextMatchID;
+        if (!destId) continue;
+
+        const feeders = sourcesFeeding(destId)
+          .map((x) => pos.get(x.MatchID))
+          .filter(Boolean);
+        if (feeders.length >= 2) {
+          const ys = feeders.map((p) => p.y);
+          const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
+          const current = pos.get(destId);
+          if (current) pos.set(destId, { ...current, y: centerY });
+        }
+      }
+    }
+
+    return pos;
+  }
+
+  function clearColumns() {
+    document.querySelectorAll(".round-col").forEach((col) => (col.innerHTML = ""));
+    matchElById.clear();
+  }
+
+  function renderMatchCard(m) {
+    const teams = slotTeam.get(m.MatchID) || { A: "TBD", B: "TBD" };
+    const pick = predictedWinnerById.get(m.MatchID) || "";
+
+    const aName = norm(teams.A) || "TBD";
+    const bName = norm(teams.B) || "TBD";
+
+    const actualWin = norm(m.Winner);
+    const completed = isCompletedMatch(m);
+
+    const el = document.createElement("div");
+    el.className = "match";
+    el.dataset.matchId = String(m.MatchID);
+
+    const rowA = document.createElement("div");
+    rowA.className = "teamrow";
+    rowA.dataset.slot = "A";
+    rowA.dataset.team = aName;
+
+    const rowB = document.createElement("div");
+    rowB.className = "teamrow";
+    rowB.dataset.slot = "B";
+    rowB.dataset.team = bName;
+
+    function buildRow(row, teamName) {
+      const logo = document.createElement("div");
+      logo.className = "logoBox";
+      logo.textContent =
+        teamName && teamName !== "TBD"
+          ? teamName
+              .split(" ")
+              .map((w) => w[0])
+              .join("")
+              .slice(0, 2)
+              .toUpperCase()
+          : "";
+
+      const name = document.createElement("div");
+      name.className = "nameBox";
+      name.textContent = teamName || "TBD";
+
+      const score = document.createElement("div");
+      score.className = "scoreBox";
+      score.textContent = "";
+
+      row.appendChild(logo);
+      row.appendChild(name);
+      row.appendChild(score);
+
+      if (!isRealTeam(teamName) || completed) row.classList.add("disabled");
+      if (actualWin && teamName === actualWin) row.classList.add("win");
+      if (pick && teamName === pick) row.classList.add("picked");
+      if (pick && teamName !== pick && isRealTeam(teamName))
+        row.classList.add("loser");
+
+      row.addEventListener("click", () => {
+        if (!isRealTeam(teamName)) return;
+        if (completed) return;
+        setPick(m.MatchID, teamName);
+      });
+    }
+
+    buildRow(rowA, aName);
+    buildRow(rowB, bName);
+
+    el.appendChild(rowA);
+    el.appendChild(rowB);
+
+    return el;
+  }
+
+  function renderBracket() {
+    clearColumns();
+
+    const groups = groupBySideRound();
+    const pos = computePositions(groups);
+
+    for (const m of rawMatches) {
+      const isLeft = m.Side === "L" && LEFT_ROUNDS.includes(m.Round);
+      const isRight =
+        m.Side === "R" && ["Play-In", "R16", "Quarter", "Semi"].includes(m.Round);
+      const isCenter = m.Side === "C" && m.Round === FINAL_ROUND;
+      if (!isLeft && !isRight && !isCenter) continue;
+
+      const col = getColumnEl(m.Side, m.Round);
+      if (!col) continue;
+
+      const card = renderMatchCard(m);
+      const p = pos.get(m.MatchID) || { x: 0, y: 0 };
+      card.style.top = `${Math.max(0, p.y)}px`;
+
+      col.appendChild(card);
+      matchElById.set(m.MatchID, card);
+    }
+  }
+
+  function drawLines() {
+    while (els.lines.firstChild) els.lines.removeChild(els.lines.firstChild);
+
+    const wrapRect = els.wrap.getBoundingClientRect();
+    const svg = els.lines;
+
+    const unscaledW = Math.ceil(wrapRect.width / zoom);
+    const unscaledH = Math.ceil(wrapRect.height / zoom);
+    svg.setAttribute("width", String(unscaledW));
+    svg.setAttribute("height", String(unscaledH));
+    svg.setAttribute("viewBox", `0 0 ${unscaledW} ${unscaledH}`);
+
+    function rowEdge(matchId, slot, edge) {
+      const card = matchElById.get(matchId);
+      if (!card) return null;
+      const row = card.querySelector(`.teamrow[data-slot="${slot}"]`);
+      if (!row) return null;
+
+      const rowRect = row.getBoundingClientRect();
+      const wrapR = els.wrap.getBoundingClientRect();
+
+      const xPx = edge === "right" ? rowRect.right : rowRect.left;
+      const x = (xPx - wrapR.left) / zoom;
+      const y = (rowRect.top - wrapR.top + rowRect.height / 2) / zoom;
+      return { x, y };
+    }
+
+    function matchOutputAnchor(m) {
+      const outEdge = m.Side === "R" ? "left" : "right";
+      const a = rowEdge(m.MatchID, "A", outEdge);
+      const b = rowEdge(m.MatchID, "B", outEdge);
+      if (!a || !b) return null;
+      return {
+        x:
+          outEdge === "right"
+            ? Math.max(a.x, b.x)
+            : Math.min(a.x, b.x),
+        y: (a.y + b.y) / 2,
+      };
+    }
+
+    function destSlotAnchor(sourceMatch, destId, destSlot) {
+      const destM = matchById.get(destId);
+      if (!destM) return null;
+
+      let inEdge = "left";
+      if (destM.Side === "R") inEdge = "right";
+      if (destM.Side === "C")
+        inEdge = sourceMatch.Side === "R" ? "right" : "left";
+
+      return rowEdge(destId, destSlot, inEdge);
+    }
+
+    for (const m of rawMatches) {
+      if (!m.NextMatchID || !m.NextSlot) continue;
+
+      const out = matchOutputAnchor(m);
+      if (!out) continue;
+
+      const dest = destSlotAnchor(m, m.NextMatchID, m.NextSlot);
+      if (!dest) continue;
+
+      const x1 = out.x,
+        y1 = out.y;
+      const x2 = dest.x,
+        y2 = dest.y;
+      const midX = x1 + (x2 - x1) * 0.5;
+
+      const path = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "path"
+      );
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "rgba(0,0,0,0.55)");
+      path.setAttribute("stroke-width", "2");
+      path.setAttribute("d", `M ${x1} ${y1} H ${midX} V ${y2} H ${x2}`);
+      svg.appendChild(path);
+    }
+  }
+
+  function renderLeaderboard(rows) {
+    els.leaderboard.innerHTML = "";
+    if (!rows || rows.length === 0) {
+      const li = document.createElement("li");
+      li.className = "lb-row";
+      li.innerHTML = `<span class="lb-user">No entries yet.</span><span class="lb-points"></span>`;
+      els.leaderboard.appendChild(li);
+      return;
+    }
+
+    for (const r of rows) {
+      const user = norm(r.Username || r.User || r.name || r.username);
+      const pts = norm(r.Points || r.points || r.score);
+      const li = document.createElement("li");
+      li.className = "lb-row";
+      li.innerHTML = `<span class="lb-user">${user || "?"}</span><span class="lb-points">${
+        pts !== "" ? `${pts} pts` : ""
+      }</span>`;
+      els.leaderboard.appendChild(li);
+    }
+  }
+
+  function renderAll() {
+    renderBracket();
+    requestAnimationFrame(() => {
+      drawLines();
+      fitZoom();
+      sizeViewportToContent();
+    });
+  }
+
+  // =========================
+  // POST HELPERS (FORM)
   // =========================
   async function postForm(paramsObj) {
     const params = new URLSearchParams();
     Object.entries(paramsObj).forEach(([k, v]) => params.set(k, String(v)));
 
+    // IMPORTANT:
+    // GitHub Pages -> Apps Script is cross-origin.
+    // no-cors allows the POST to be sent, but the response is opaque.
     await fetch(SCRIPT_URL, {
       method: "POST",
       mode: "no-cors",
@@ -167,66 +584,144 @@
       body: params.toString(),
     });
 
-    return { ok: true };
+    // We cannot reliably read status/text in no-cors, so just return a marker.
+    return { ok: true, status: 0, text: "SENT(no-cors)" };
   }
 
+  // =========================
+  // SUBMIT PREDICTIONS
+  // =========================
   function buildPredictionRows() {
     const name = norm(els.username.value);
     const rows = [];
 
-    rawMatches.forEach(m => {
-      if (isCompletedMatch(m)) return;
+    for (const m of rawMatches) {
+      if (isCompletedMatch(m)) continue;
+
       const pick = predictedWinnerById.get(m.MatchID);
-      if (pick) rows.push([new Date().toISOString(), name, m.MatchID, pick]);
-    });
+      if (!pick) continue;
+
+      const s = slotTeam.get(m.MatchID);
+      if (!s) continue;
+      if (!isRealTeam(s.A) || !isRealTeam(s.B)) continue;
+
+      const ts = new Date().toISOString();
+      rows.push([ts, name, String(m.MatchID), pick]);
+    }
 
     return rows;
   }
 
   async function submitPredictions() {
-    if (!norm(els.username.value)) {
-      alert("Enter your name.");
-      return;
+    const btn = els.submitBtn;
+    const original = btn.textContent;
+
+    btn.disabled = true;
+    btn.textContent = "Submitting…";
+
+    try {
+      const name = norm(els.username.value);
+      if (!name) {
+        alert("Enter your name first (exact spelling).");
+        return;
+      }
+
+      const rows = buildPredictionRows();
+      if (rows.length === 0) {
+        alert("No picks to submit (or all remaining fixtures are completed).");
+        return;
+      }
+
+      console.log("Submitting predictions rows:", rows);
+
+      for (const row of rows) {
+        await postForm({
+          type: "appendPrediction",
+          rowJson: JSON.stringify(row),
+        });
+      }
+
+      alert(
+        `✅ Submitted ${rows.length} prediction(s).\n\nBecause this is GitHub Pages → Apps Script, the browser cannot read the reply.\nCheck the Predictions tab (and DebugLog) to confirm.`
+      );
+
+      await refreshLeaderboardOnly();
+    } catch (e) {
+      alert(`❌ Submit predictions failed.\n\n${e?.message || e}`);
+      console.error(e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
     }
-
-    const rows = buildPredictionRows();
-    if (!rows.length) {
-      alert("No predictions to submit.");
-      return;
-    }
-
-    els.submitBtn.disabled = true;
-
-    for (const row of rows) {
-      await postForm({
-        type: "appendPrediction",
-        rowJson: JSON.stringify(row),
-      });
-    }
-
-    els.submitBtn.disabled = false;
-    alert(`✅ Submitted ${rows.length} prediction(s).\n(Check Predictions / DebugLog)`);
   }
 
   // =========================
-  // BOOT
+  // MAIN
   // =========================
-  async function boot() {
-    if (!assertEls()) return;
-
-    els.submitBtn.addEventListener("click", submitPredictions);
-    els.submitResultsBtn.addEventListener("click", () =>
-      alert("Submit Results not wired in this build.")
-    );
-
+  async function refreshAll() {
     const matches = await loadMatches();
     indexMatches(matches);
+
     initSlotsFromSheet();
+    applyPredictionsForward();
     renderAll();
   }
 
-  function renderAll() {
-    // your existing render logic untouched
+  async function refreshLeaderboardOnly() {
+    const lb = await loadLeaderboard();
+    renderLeaderboard(lb);
+  }
+
+  async function boot() {
+    if (!assertEls()) return;
+
+    console.log("✅ script_v2.js loaded (submit via no-cors)");
+
+    els.refreshBtn.addEventListener("click", async () => {
+      try {
+        await refreshAll();
+      } catch (e) {
+        console.error(e);
+        alert(e.message);
+      }
+    });
+
+    els.syncBtn.addEventListener("click", async () => {
+      await syncBracket();
+      try {
+        await refreshAll();
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    els.submitBtn.addEventListener("click", submitPredictions);
+
+    els.submitResultsBtn.addEventListener("click", () => {
+      alert("Submit Results is not wired in this build.");
+    });
+
+    els.zoomIn.addEventListener("click", () => setZoom(zoom + 0.1));
+    els.zoomOut.addEventListener("click", () => setZoom(zoom - 0.1));
+    els.zoomFit.addEventListener("click", () => fitZoom());
+
+    window.addEventListener("resize", () => {
+      fitZoom();
+      drawLines();
+      sizeViewportToContent();
+    });
+
+    try {
+      await refreshAll();
+      await refreshLeaderboardOnly();
+      setTimeout(() => {
+        fitZoom();
+        sizeViewportToContent();
+      }, 50);
+    } catch (e) {
+      console.error(e);
+      alert(e.message);
+    }
   }
 
   boot();
