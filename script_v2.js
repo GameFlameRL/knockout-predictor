@@ -67,7 +67,7 @@
     return t !== "" && t.toUpperCase() !== "TBD";
   }
 
-  // CHANGED: fixture considered completed if Winner is set to a real team name
+  // Completed if Winner is set to a real team
   function isCompletedMatch(m) {
     const w = norm(m?.Winner);
     return isRealTeam(w);
@@ -245,7 +245,7 @@
     const m = matchById.get(matchId);
     if (!m) return;
 
-    // CHANGED: block selecting completed fixtures
+    // Block selecting completed fixtures
     if (isCompletedMatch(m)) return;
 
     const teams = slotTeam.get(matchId);
@@ -342,7 +342,7 @@
     const bName = norm(teams.B) || "TBD";
 
     const actualWin = norm(m.Winner);
-    const completed = isCompletedMatch(m); // CHANGED
+    const completed = isCompletedMatch(m);
 
     const el = document.createElement("div");
     el.className = "match";
@@ -377,19 +377,16 @@
       row.appendChild(name);
       row.appendChild(score);
 
-      // Disable click if TBD/empty OR match is completed
       if (!isRealTeam(teamName) || completed) row.classList.add("disabled");
 
-      // Actual winner highlight
       if (actualWin && teamName === actualWin) row.classList.add("win");
 
-      // User pick highlight (only meaningful if not completed, but harmless)
       if (pick && teamName === pick) row.classList.add("picked");
       if (pick && teamName !== pick && isRealTeam(teamName)) row.classList.add("loser");
 
       row.addEventListener("click", () => {
         if (!isRealTeam(teamName)) return;
-        if (completed) return; // CHANGED: hard block
+        if (completed) return;
         setPick(m.MatchID, teamName);
       });
     }
@@ -530,14 +527,15 @@
   }
 
   // =========================
-  // SUBMIT PREDICTIONS
+  // SUBMIT / ENTER RESULTS (FIXED)
   // =========================
+
   function buildPicksPayload() {
     const name = norm(els.username.value);
     const picks = [];
 
     for (const m of rawMatches) {
-      // CHANGED: also don't include completed fixtures in the submit payload
+      // don't submit completed fixtures
       if (isCompletedMatch(m)) continue;
 
       const pick = predictedWinnerById.get(m.MatchID);
@@ -560,6 +558,33 @@
     return { Username: name, Picks: picks };
   }
 
+  // CHANGED: Apps Script often expects form fields, not JSON.
+  // This uses application/x-www-form-urlencoded (no preflight) and sends BOTH:
+  // - Username
+  // - PicksJson (string)
+  // - action
+  async function postToAppsScript(action, payloadObj) {
+    const params = new URLSearchParams();
+    params.set("action", action);
+
+    // Common field names scripts look for:
+    if (payloadObj?.Username) params.set("Username", payloadObj.Username);
+
+    // Send the full payload as JSON string too (easy for Apps Script to parse)
+    params.set("PayloadJson", JSON.stringify(payloadObj));
+    params.set("PicksJson", JSON.stringify(payloadObj?.Picks || []));
+
+    const r = await fetch(SCRIPT_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: params.toString(),
+    });
+
+    // Even if your script returns plain text, we can show it
+    const text = await r.text().catch(() => "");
+    return { ok: r.ok, status: r.status, text };
+  }
+
   async function submitPredictions() {
     const name = norm(els.username.value);
     if (!name) {
@@ -568,17 +593,26 @@
     }
 
     const payload = buildPicksPayload();
+
     try {
-      const r = await fetch(SCRIPT_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "submitPredictions", ...payload }),
-      });
-      if (!r.ok) throw new Error(`Submit HTTP ${r.status}`);
-      alert("Predictions submitted!");
+      const res = await postToAppsScript("submitPredictions", payload);
+
+      if (!res.ok) {
+        // Show the real reason (status + response), not the generic message
+        alert(`Submit failed (HTTP ${res.status}).\n\n${res.text || "No response body from Apps Script."}`);
+        return;
+      }
+
+      // If your script returns JSON, cool. If not, still show success.
+      alert("Submitted!");
       await refreshLeaderboardOnly();
     } catch (e) {
-      alert("Submit failed. If your Apps Script expects a different payload/action, tell me and I’ll match it.");
+      // This catches network/CORS issues
+      alert(
+        "Submit failed due to a network/CORS error.\n\n" +
+        "If you can open your Apps Script URL directly in a browser but POST fails from GitHub Pages, your Apps Script must return CORS headers.\n\n" +
+        `Error: ${e?.message || e}`
+      );
       console.error(e);
     }
   }
