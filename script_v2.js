@@ -141,8 +141,7 @@
   }
 
   async function loadLeaderboard() {
-    // NOTE: your Apps Script doGet() returns "OK" only, so this will always show "No entries yet."
-    // If you want leaderboard, you need to implement doGet?action=leaderboard server-side.
+    // Your Apps Script doGet() returns "OK", so this will always fall back to "No entries yet."
     try {
       const u = `${SCRIPT_URL}?action=leaderboard&t=${Date.now()}`;
       const r = await fetch(u);
@@ -529,9 +528,9 @@
   }
 
   // =========================
-  // SUBMIT PREDICTIONS (MATCHES YOUR APPS SCRIPT)
+  // SUBMIT PREDICTIONS (FORM POST to avoid CORS preflight)
   // =========================
-  function buildPicksPayloadRows() {
+  function buildPredictionRows() {
     const name = norm(els.username.value);
     const rows = [];
 
@@ -552,11 +551,15 @@
     return rows;
   }
 
-  async function appendPredictionRow(row) {
+  async function appendPredictionRowForm(row) {
+    const params = new URLSearchParams();
+    params.set("type", "appendPrediction");
+    params.set("rowJson", JSON.stringify(row));
+
     const r = await fetch(SCRIPT_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "appendPrediction", row }),
+      headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      body: params.toString(),
     });
 
     const text = await r.text().catch(() => "");
@@ -572,21 +575,22 @@
       return;
     }
 
-    const rows = buildPicksPayloadRows();
+    const rows = buildPredictionRows();
     if (rows.length === 0) {
       alert("No picks to submit (or all remaining fixtures are completed).");
       return;
     }
 
     try {
-      // Sequential to avoid Apps Script rate limits
+      // Sequential avoids rate-limit / concurrency weirdness
       for (const row of rows) {
-        await appendPredictionRow(row);
+        await appendPredictionRowForm(row);
       }
 
       alert(`Submitted ${rows.length} pick(s) to the Predictions sheet.`);
       await refreshLeaderboardOnly();
     } catch (e) {
+      // If this fires again, it will now show HTTP + response text (or network error)
       alert(`Submit failed.\n\n${e?.message || e}`);
       console.error(e);
     }
