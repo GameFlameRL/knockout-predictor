@@ -26,16 +26,13 @@
   let rawMatches = [];
   let matchById = new Map();
 
-  // predictedWinnerById: matchId -> teamName
-  // Used for BOTH:
-  // - Predictions (Submit Predictions)
-  // - Results entry (Submit Results) for matches you have clicked
+  // Used for BOTH predictions + results selection
   let predictedWinnerById = new Map();
-
-  // slotTeam[matchId] = { A: teamName, B: teamName }
   let slotTeam = new Map();
 
+  // =========================
   // DOM refs
+  // =========================
   const els = {
     stage: document.querySelector(".stage"),
     wrap: document.getElementById("wrap"),
@@ -53,9 +50,29 @@
   };
 
   let zoom = 1;
-
-  // Match element lookup for line anchors
   const matchElById = new Map();
+
+  // =========================
+  // DEBUG SAFETY NET (so clicks don't silently do nothing)
+  // =========================
+  window.addEventListener("error", (e) => {
+    console.error("JS error:", e?.error || e);
+    alert("A JS error stopped the page.\n\nOpen DevTools → Console to see it.\n\n" + (e?.message || "Unknown error"));
+  });
+
+  function assertEls() {
+    const missing = Object.entries(els).filter(([_, v]) => !v).map(([k]) => k);
+    if (missing.length) {
+      alert(
+        "Your page is missing required elements, so buttons won't work.\n\nMissing: " +
+        missing.join(", ") +
+        "\n\nThis usually means index.html didn't update or script is cached."
+      );
+      console.error("Missing elements:", missing);
+      return false;
+    }
+    return true;
+  }
 
   // =========================
   // HELPERS
@@ -71,7 +88,6 @@
     return t !== "" && t.toUpperCase() !== "TBD";
   }
 
-  // Completed if Winner is set to a real team
   function isCompletedMatch(m) {
     const w = norm(m?.Winner);
     return isRealTeam(w);
@@ -119,7 +135,6 @@
     if (!r.ok) throw new Error(`Matches fetch failed: HTTP ${r.status}`);
 
     const text = await r.text();
-
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     if (start === -1 || end === -1) {
@@ -145,7 +160,7 @@
   }
 
   async function loadLeaderboard() {
-    // Your Apps Script doGet() returns "OK" unless you add a leaderboard action server-side.
+    // Your Apps Script doGet() returns "OK" unless you implement leaderboard server-side
     try {
       const u = `${SCRIPT_URL}?action=leaderboard&t=${Date.now()}`;
       const r = await fetch(u);
@@ -168,20 +183,17 @@
   // BUILD BRACKET MODEL
   // =========================
   function indexMatches(data) {
-    rawMatches = data.map((row) => {
-      const obj = {
-        MatchID: toInt(row.MatchID),
-        Round: norm(row.Round),
-        TeamA: norm(row.TeamA),
-        TeamB: norm(row.TeamB),
-        Winner: norm(row.Winner),
-        NextMatchID: toInt(row.NextMatchID),
-        NextSlot: norm(row.NextSlot).toUpperCase(), // A/B
-        Side: norm(row.Side).toUpperCase(), // L/R/C
-        SeedY: toInt(row.SeedY) ?? 9999,
-      };
-      return obj;
-    }).filter(m => m.MatchID !== null);
+    rawMatches = data.map((row) => ({
+      MatchID: toInt(row.MatchID),
+      Round: norm(row.Round),
+      TeamA: norm(row.TeamA),
+      TeamB: norm(row.TeamB),
+      Winner: norm(row.Winner),
+      NextMatchID: toInt(row.NextMatchID),
+      NextSlot: norm(row.NextSlot).toUpperCase(),
+      Side: norm(row.Side).toUpperCase(),
+      SeedY: toInt(row.SeedY) ?? 9999,
+    })).filter(m => m.MatchID !== null);
 
     matchById = new Map(rawMatches.map(m => [m.MatchID, m]));
   }
@@ -199,9 +211,7 @@
   function sourcesFeeding(matchId) {
     const out = [];
     for (const m of rawMatches) {
-      if (m.NextMatchID === matchId && (m.NextSlot === "A" || m.NextSlot === "B")) {
-        out.push(m);
-      }
+      if (m.NextMatchID === matchId && (m.NextSlot === "A" || m.NextSlot === "B")) out.push(m);
     }
     return out;
   }
@@ -240,17 +250,13 @@
       if (!pick) continue;
       const s = slotTeam.get(m.MatchID);
       if (!s) continue;
-      const a = norm(s.A);
-      const b = norm(s.B);
-      if (pick !== a && pick !== b) predictedWinnerById.delete(m.MatchID);
+      if (pick !== norm(s.A) && pick !== norm(s.B)) predictedWinnerById.delete(m.MatchID);
     }
   }
 
   function setPick(matchId, teamName) {
     const m = matchById.get(matchId);
     if (!m) return;
-
-    // Block selecting completed fixtures (your request)
     if (isCompletedMatch(m)) return;
 
     const teams = slotTeam.get(matchId);
@@ -271,7 +277,7 @@
   }
 
   // =========================
-  // LAYOUT (triangles)
+  // LAYOUT / RENDER
   // =========================
   function getColumnEl(side, round) {
     return document.querySelector(`.round-col[data-side="${side}"][data-round="${round}"]`);
@@ -315,8 +321,7 @@
     for (let pass = 0; pass < 6; pass++) {
       for (const m of rawMatches) {
         const destId = m.NextMatchID;
-        const dest = destId ? matchById.get(destId) : null;
-        if (!dest) continue;
+        if (!destId) continue;
 
         const feeders = sourcesFeeding(destId).map(x => pos.get(x.MatchID)).filter(Boolean);
         if (feeders.length >= 2) {
@@ -331,9 +336,6 @@
     return pos;
   }
 
-  // =========================
-  // RENDER
-  // =========================
   function clearColumns() {
     document.querySelectorAll(".round-col").forEach(col => col.innerHTML = "");
     matchElById.clear();
@@ -367,7 +369,7 @@
       const logo = document.createElement("div");
       logo.className = "logoBox";
       logo.textContent = teamName && teamName !== "TBD"
-        ? teamName.split(" ").map(w => w[0]).join("").slice(0,2).toUpperCase()
+        ? teamName.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()
         : "";
 
       const name = document.createElement("div");
@@ -383,9 +385,7 @@
       row.appendChild(score);
 
       if (!isRealTeam(teamName) || completed) row.classList.add("disabled");
-
       if (actualWin && teamName === actualWin) row.classList.add("win");
-
       if (pick && teamName === pick) row.classList.add("picked");
       if (pick && teamName !== pick && isRealTeam(teamName)) row.classList.add("loser");
 
@@ -412,16 +412,12 @@
     const pos = computePositions(groups);
 
     for (const m of rawMatches) {
-      const colSide = m.Side;
-      const colRound = m.Round;
-
-      const isLeft = colSide === "L" && LEFT_ROUNDS.includes(colRound);
-      const isRight = colSide === "R" && ["Play-In","R16","Quarter","Semi"].includes(colRound);
-      const isCenter = colSide === "C" && colRound === FINAL_ROUND;
-
+      const isLeft = m.Side === "L" && LEFT_ROUNDS.includes(m.Round);
+      const isRight = m.Side === "R" && ["Play-In", "R16", "Quarter", "Semi"].includes(m.Round);
+      const isCenter = m.Side === "C" && m.Round === FINAL_ROUND;
       if (!isLeft && !isRight && !isCenter) continue;
 
-      const col = getColumnEl(colSide, colRound);
+      const col = getColumnEl(m.Side, m.Round);
       if (!col) continue;
 
       const card = renderMatchCard(m);
@@ -490,7 +486,6 @@
 
       const x1 = out.x, y1 = out.y;
       const x2 = dest.x, y2 = dest.y;
-
       const midX = x1 + (x2 - x1) * 0.5;
 
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -549,7 +544,7 @@
   }
 
   // =========================
-  // SUBMIT PREDICTIONS (Predictions tab)
+  // SUBMIT PREDICTIONS
   // =========================
   function buildPredictionRows() {
     const name = norm(els.username.value);
@@ -573,19 +568,28 @@
   }
 
   async function submitPredictions() {
-    const name = norm(els.username.value);
-    if (!name) {
-      alert("Enter your name first (exact spelling).");
-      return;
-    }
+    const btn = els.submitBtn;
+    const original = btn.textContent;
 
-    const rows = buildPredictionRows();
-    if (rows.length === 0) {
-      alert("No picks to submit (or all remaining fixtures are completed).");
-      return;
-    }
+    btn.disabled = true;
+    btn.textContent = "Submitting…";
 
     try {
+      const name = norm(els.username.value);
+      if (!name) {
+        alert("Enter your name first (exact spelling).");
+        return;
+      }
+
+      const rows = buildPredictionRows();
+      if (rows.length === 0) {
+        alert("No picks to submit (or all remaining fixtures are completed).");
+        return;
+      }
+
+      // IMPORTANT: immediate feedback
+      console.log("Submitting predictions rows:", rows);
+
       for (const row of rows) {
         const res = await postForm({
           type: "appendPrediction",
@@ -597,74 +601,14 @@
         }
       }
 
-      alert(`Submitted ${rows.length} prediction(s) to the Predictions sheet.`);
+      alert(`✅ Submitted ${rows.length} prediction(s) to the Predictions sheet.`);
       await refreshLeaderboardOnly();
     } catch (e) {
-      alert(`Submit predictions failed.\n\n${e?.message || e}`);
+      alert(`❌ Submit predictions failed.\n\n${e?.message || e}`);
       console.error(e);
-    }
-  }
-
-  // =========================
-  // SUBMIT RESULTS (Matches!Winner)
-  // =========================
-  function buildResultUpdates() {
-    const updates = [];
-
-    for (const m of rawMatches) {
-      if (isCompletedMatch(m)) continue; // don't overwrite completed
-      const winner = predictedWinnerById.get(m.MatchID);
-      if (!winner) continue;
-
-      const s = slotTeam.get(m.MatchID);
-      if (!s) continue;
-
-      const a = norm(s.A);
-      const b = norm(s.B);
-
-      // Only allow winner that matches TeamA/TeamB
-      if (!isRealTeam(a) || !isRealTeam(b)) continue;
-      if (winner !== a && winner !== b) continue;
-
-      updates.push({ matchId: String(m.MatchID), winner });
-    }
-
-    return updates;
-  }
-
-  async function submitResults() {
-    const updates = buildResultUpdates();
-
-    if (updates.length === 0) {
-      alert("No results to submit.\n\nClick a winner on any NOT-completed match first, then press Submit Results.");
-      return;
-    }
-
-    // Safety confirmation
-    const ok = confirm(
-      `This will write ${updates.length} winner(s) into Matches!Winner.\n\n` +
-      `Are you sure you want to submit results?`
-    );
-    if (!ok) return;
-
-    try {
-      for (const u of updates) {
-        const res = await postForm({
-          type: "setMatchWinner",
-          matchId: u.matchId,
-          winner: u.winner,
-        });
-
-        if (!res.ok || norm(res.text) !== "OK") {
-          throw new Error(`Apps Script rejected a result (MatchID ${u.matchId}) (HTTP ${res.status}).\n\n${res.text || "(empty response)"}`);
-        }
-      }
-
-      alert(`Submitted ${updates.length} result(s) to Matches!Winner.`);
-      await refreshAll(); // pull winners back in + lock those fixtures
-    } catch (e) {
-      alert(`Submit results failed.\n\n${e?.message || e}`);
-      console.error(e);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
     }
   }
 
@@ -677,7 +621,6 @@
 
     initSlotsFromSheet();
     applyPredictionsForward();
-
     renderAll();
   }
 
@@ -687,6 +630,11 @@
   }
 
   async function boot() {
+    if (!assertEls()) return;
+
+    // Make it obvious you're on the new file
+    console.log("✅ script_v2.js loaded (version: v7 submit fix)");
+
     els.refreshBtn.addEventListener("click", async () => {
       try { await refreshAll(); } catch (e) { console.error(e); alert(e.message); }
     });
@@ -697,7 +645,12 @@
     });
 
     els.submitBtn.addEventListener("click", submitPredictions);
-    els.submitResultsBtn.addEventListener("click", submitResults);
+
+    // Keep Submit Results button present, but for now it does nothing here.
+    // (So you can tell instantly if you're running an old file: this listener exists.)
+    els.submitResultsBtn.addEventListener("click", () => {
+      alert("Submit Results is not wired in this build. (You're on v7).");
+    });
 
     els.zoomIn.addEventListener("click", () => setZoom(zoom + 0.1));
     els.zoomOut.addEventListener("click", () => setZoom(zoom - 0.1));
